@@ -39,9 +39,15 @@ npm install
 | `npm run format`       | Format in place                             |
 | `npm run format:check` | Verify formatting                           |
 
-`npm run dev` binds to `0.0.0.0` and prints a Network URL. Open that on a real
-phone — touch gestures, momentum scrolling, and virtual-keyboard behaviour are
-not faithfully reproduced by desktop device emulation.
+`npm run dev` serves on **port 8080**, bound to `0.0.0.0`, so it is reachable
+from outside this VM as well as from a phone on the same network. The port is
+`strictPort`, so a clash fails loudly rather than silently moving to 8081 and
+landing on a port nothing forwards to.
+
+Test on a real phone where you can — touch gestures, momentum scrolling, and
+virtual-keyboard behaviour are not faithfully reproduced by desktop device
+emulation. `npm run e2e` drives its own preview server on 4173 and is
+unaffected by the dev port.
 
 ## Architecture
 
