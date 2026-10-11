@@ -196,6 +196,28 @@ export class DocStore {
     return countNodes(nodes)
   }
 
+  /** Fold or unfold everything foldable, as one undo step. */
+  setAllCollapsed(collapsed: boolean): void {
+    this.transact(collapsed ? 'collapse all' : 'expand all', (tx) =>
+      ops.setAllCollapsed(tx, collapsed),
+    )
+  }
+
+  /**
+   * How many items could be folded, and how many already are. Drives whether
+   * a fold-everything control is useful and which direction it should go.
+   */
+  get foldable(): { total: number; collapsed: number } {
+    let total = 0
+    let collapsed = 0
+    for (const [id, item] of Object.entries(this.doc.items)) {
+      if (id === this.doc.rootId || item.children.length === 0) continue
+      total += 1
+      if (item.collapsed) collapsed += 1
+    }
+    return { total, collapsed }
+  }
+
   toggleCollapsed(id: ItemId): void {
     this.transact('collapse', (tx) => ops.toggleCollapsed(tx, id))
   }

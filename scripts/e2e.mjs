@@ -941,6 +941,52 @@ check(
   ).includes('https://imported.test/page'),
 )
 
+console.log('\ncollapse all')
+await resetDocument(page)
+const expandedCount = (await outlineOf(page)).length
+const foldAll = page.locator('header button[aria-label="Collapse all"]')
+check('the header offers a collapse-all control', await foldAll.isVisible())
+await foldAll.click()
+await page.waitForTimeout(150)
+const folded = await outlineOf(page)
+equal('only top-level rows remain', folded, ['Welcome', 'Try it'])
+
+console.log('\nthe same control expands again')
+const unfoldAll = page.locator('header button[aria-label="Expand all"]')
+check('it has turned into expand-all', await unfoldAll.isVisible())
+await unfoldAll.click()
+await page.waitForTimeout(150)
+check(
+  'everything comes back',
+  (await outlineOf(page)).length === expandedCount,
+  `${expandedCount} -> ${(await outlineOf(page)).length}`,
+)
+
+console.log('\ncollapsing everything is one undo step')
+await foldAll.click()
+await page.waitForTimeout(150)
+await page.locator('header button', { hasText: 'Undo' }).click()
+await page.waitForTimeout(150)
+check(
+  'a single undo restores every row',
+  (await outlineOf(page)).length === expandedCount,
+  `${expandedCount} -> ${(await outlineOf(page)).length}`,
+)
+
+console.log('\nthe header still fits a narrow phone')
+await page.setViewportSize({ width: 320, height: 640 })
+await page.waitForTimeout(100)
+const narrow = await page.evaluate(() => ({
+  scrollW: document.documentElement.scrollWidth,
+  clientW: document.documentElement.clientWidth,
+}))
+check(
+  'four controls do not overflow at 320px',
+  narrow.scrollW <= narrow.clientW,
+  `${narrow.scrollW} > ${narrow.clientW}`,
+)
+await page.setViewportSize({ width: 390, height: 844 })
+
 console.log('\npersistence across reload')
 
 const beforeReload = await outlineOf(page)

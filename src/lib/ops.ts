@@ -419,6 +419,25 @@ export function moveItem(
 }
 
 /**
+ * Fold or unfold every item that has children, in one transaction so the
+ * whole sweep is a single undo step.
+ */
+export function setAllCollapsed(tx: Tx, collapsed: boolean): null {
+  for (const id of Object.keys(tx.doc.items)) {
+    if (id === tx.doc.rootId) continue
+    const item = tx.doc.items[id]
+    if (item === undefined) continue
+    // Leaves have nothing to hide, and untouched records keep the journal
+    // entry down to only what actually changed.
+    if (item.children.length === 0 || item.collapsed === collapsed) continue
+    tx.update(id, (target) => {
+      target.collapsed = collapsed
+    })
+  }
+  return null
+}
+
+/**
  * Insert a parsed tree under `parentId`, after `afterId`. Backs markdown
  * import: the whole forest lands in one transaction, so an import of a
  * hundred lines is still a single undo.

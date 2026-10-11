@@ -173,6 +173,10 @@ arrive.
   and `[label](url)` stay as written — the URL inside the latter is still
   clickable. Task markers `[ ]` / `[x]` are kept as text, since there is no
   done state to map them onto yet.
+- **Collapse all** in the header folds every parent at once, and turns into
+  expand-all once everything is folded — a collapse-only button would leave no
+  way back but opening each row by hand. It is one undo step, and records
+  nothing when there is nothing to change.
 - **Tap a bullet to fold or unfold** its children. A parent's bullet is a
   chevron — pointing down when open, right when folded — so the state is
   readable at a glance; a leaf keeps a plain dot, since a chevron there would

@@ -276,3 +276,65 @@ describe('editing via the store', () => {
     expect(validateDoc(store.doc)).toEqual([])
   })
 })
+
+describe('folding everything at once', () => {
+  const NESTED = outline`
+    a
+      b
+        c
+      d
+    e
+      f
+    g
+  `
+
+  it('reports what can be folded and what already is', () => {
+    const store = makeStore(NESTED)
+    // 'a', 'b' and 'e' have children; 'g' and the leaves do not.
+    expect(store.foldable).toEqual({ total: 3, collapsed: 0 })
+    store.toggleCollapsed(idOf(store.doc, 'b'))
+    expect(store.foldable).toEqual({ total: 3, collapsed: 1 })
+  })
+
+  it('folds every parent in one step', () => {
+    const store = makeStore(NESTED)
+    store.setAllCollapsed(true)
+    expect(store.foldable).toEqual({ total: 3, collapsed: 3 })
+    expect(store.rows().map((row) => store.textOf(row.id))).toEqual(['a', 'e', 'g'])
+    expect(store.undoDepth).toBe(1)
+  })
+
+  it('unfolds every parent in one step', () => {
+    const store = makeStore(NESTED)
+    store.setAllCollapsed(true)
+    store.setAllCollapsed(false)
+    expect(store.foldable).toEqual({ total: 3, collapsed: 0 })
+    expect(store.rows()).toHaveLength(7)
+  })
+
+  it('is a single undo however many rows it touched', () => {
+    const store = makeStore(NESTED)
+    const before = store.rows().length
+    store.setAllCollapsed(true)
+    store.undo()
+    expect(store.rows()).toHaveLength(before)
+    expect(validateDoc(store.doc)).toEqual([])
+  })
+
+  it('records nothing when everything is already in that state', () => {
+    // Otherwise pressing the button twice would bury a real edit under two
+    // empty undo steps.
+    const store = makeStore(NESTED)
+    store.setAllCollapsed(true)
+    const depth = store.undoDepth
+    store.setAllCollapsed(true)
+    expect(store.undoDepth).toBe(depth)
+  })
+
+  it('leaves a document with no parents alone', () => {
+    const store = makeStore('a\nb\nc')
+    expect(store.foldable).toEqual({ total: 0, collapsed: 0 })
+    store.setAllCollapsed(true)
+    expect(store.undoDepth).toBe(0)
+  })
+})

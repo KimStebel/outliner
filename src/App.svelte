@@ -33,6 +33,24 @@
     return store.canRedo
   })
 
+  const foldable = $derived.by(() => {
+    void revision
+    return store.foldable
+  })
+  /**
+   * Once everything foldable is folded, the same control unfolds. A
+   * collapse-only button would leave no way back except opening every row by
+   * hand.
+   */
+  const allFolded = $derived(
+    foldable.total > 0 && foldable.collapsed === foldable.total,
+  )
+
+  function toggleFoldAll(): void {
+    store.setAllCollapsed(!allFolded)
+    handleChange()
+  }
+
   let importing = $state(false)
 
   function handleImport(markdown: string): void {
@@ -66,6 +84,25 @@
 <header>
   <h1>Outliner</h1>
   <div class="actions">
+    <button
+      class="icon"
+      onclick={toggleFoldAll}
+      disabled={foldable.total === 0}
+      aria-label={allFolded ? 'Expand all' : 'Collapse all'}
+      title={allFolded ? 'Expand all' : 'Collapse all'}
+    >
+      {#if allFolded}
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 10l5-5 5 5" />
+          <path d="M7 14l5 5 5-5" />
+        </svg>
+      {:else}
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 4l5 5 5-5" />
+          <path d="M7 20l5-5 5 5" />
+        </svg>
+      {/if}
+    </button>
     <button onclick={() => (importing = true)}>Import</button>
     <button onclick={() => (store.undo(), handleChange())} disabled={!canUndo}>
       Undo
@@ -116,6 +153,14 @@
     gap: 0.375rem;
   }
 
+  /* Four controls plus a title overflow a 320px-wide phone. The title is the
+     one thing here that carries no function, so it is what gives way. */
+  @media (max-width: 24rem) {
+    h1 {
+      display: none;
+    }
+  }
+
   button {
     font: inherit;
     font-size: 0.875rem;
@@ -130,5 +175,22 @@
 
   button:disabled {
     opacity: 0.4;
+  }
+
+  .icon {
+    display: grid;
+    place-items: center;
+    width: 2.25rem;
+    padding-inline: 0;
+  }
+
+  .icon svg {
+    width: 1.125rem;
+    height: 1.125rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 </style>
