@@ -150,6 +150,11 @@ export class DocStore {
     this.transact('merge', (tx) => ops.mergeWithPrevious(tx, id))
   }
 
+  /** Move an item under a new parent, after a given sibling. Backs drag/drop. */
+  moveItem(id: ItemId, newParentId: ItemId, afterId: ItemId | null): void {
+    this.transact('move', (tx) => ops.moveItem(tx, id, newParentId, afterId))
+  }
+
   toggleCollapsed(id: ItemId): void {
     this.transact('collapse', (tx) => ops.toggleCollapsed(tx, id))
   }

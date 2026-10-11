@@ -15,6 +15,7 @@ import type { Caret, Doc, ItemId } from './model'
 import {
   createItem,
   getItem,
+  isDescendantOf,
   nextVisibleOutsideSubtree,
   previousVisible,
   subtreeIds,
@@ -365,6 +366,56 @@ export function mergeWithPrevious(tx: Tx, id: ItemId): Caret | null {
   }
   tx.remove(id)
   return { id: previousId, offset: joinOffset }
+}
+
+/**
+ * Move `id` to be a child of `newParentId`, directly after `afterId` (or first
+ * when that is `null`). Backs drag and drop; the item's own subtree travels
+ * with it, since only the parent link changes.
+ *
+ * Refuses to move an item inside its own subtree, which would detach that
+ * whole branch from the root.
+ */
+export function moveItem(
+  tx: Tx,
+  id: ItemId,
+  newParentId: ItemId,
+  afterId: ItemId | null,
+): null {
+  const item = tx.get(id)
+  if (item.parent === null) return null
+  if (id === newParentId) return null
+  if (isDescendantOf(tx.doc, newParentId, id)) return null
+  if (item.parent === newParentId && afterId === id) return null
+
+  const oldParentId = item.parent
+  tx.update(oldParentId, (parent) => {
+    parent.children.splice(parent.children.indexOf(id), 1)
+  })
+
+  // Index is resolved after the removal, so a move within one parent cannot
+  // be thrown off by the shift.
+  tx.update(newParentId, (parent) => {
+    if (afterId === null) {
+      parent.children.unshift(id)
+      return
+    }
+    const at = parent.children.indexOf(afterId)
+    if (at === -1) parent.children.push(id)
+    else parent.children.splice(at + 1, 0, id)
+  })
+
+  tx.update(id, (target) => {
+    target.parent = newParentId
+  })
+
+  if (newParentId !== tx.doc.rootId) {
+    // Dropping into a folded parent would make the item vanish on release.
+    tx.update(newParentId, (parent) => {
+      parent.collapsed = false
+    })
+  }
+  return null
 }
 
 /**

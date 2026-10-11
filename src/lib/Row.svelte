@@ -12,6 +12,10 @@
     register: (id: ItemId, el: HTMLElement | null) => void
     ontoggle: (id: ItemId) => void
     ondelete: (id: ItemId) => void
+    /** Pointer went down on the drag handle; the parent decides if it drags. */
+    ondraghandle: (id: ItemId, event: PointerEvent) => void
+    /** True while this row is the one being dragged. */
+    dragging: boolean
   }
 
   let {
@@ -24,6 +28,8 @@
     register,
     ontoggle,
     ondelete,
+    ondraghandle,
+    dragging,
   }: Props = $props()
 
   let el: HTMLElement | undefined = $state()
@@ -73,6 +79,9 @@
     // Mouse drags inside a row are text selection, so leave them alone; swipe
     // is a touch gesture. Desktop deletes rows by other means.
     if (event.pointerType === 'mouse') return
+    // The bullet is the drag handle; a gesture starting there is a move, not
+    // a swipe, and the two must not both claim it.
+    if (event.target instanceof Element && event.target.closest('.bullet')) return
     // Dragging a selection handle also produces pointer events here.
     const selection = window.getSelection()
     if (selection !== null && !selection.isCollapsed) return
@@ -162,6 +171,7 @@
   <div
     class="row"
     class:sliding
+    class:dragging
     style="--depth: {depth}; transform: translateX({offset}px)"
   >
     {#if hasChildren}
@@ -169,6 +179,7 @@
         class="bullet interactive"
         class:collapsed
         onclick={() => ontoggle(id)}
+        onpointerdown={(event) => ondraghandle(id, event)}
         aria-expanded={!collapsed}
         aria-label={collapsed ? 'Expand' : 'Collapse'}
         tabindex="-1"
@@ -178,7 +189,14 @@
         </svg>
       </button>
     {:else}
-      <span class="bullet leaf" aria-hidden="true"></span>
+      <!-- A leaf's dot is a drag handle too, even though it has nothing to
+           fold. It is not focusable and carries no action of its own. -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <span
+        class="bullet leaf"
+        aria-hidden="true"
+        onpointerdown={(event) => ondraghandle(id, event)}
+      ></span>
     {/if}
 
     <div
@@ -258,12 +276,22 @@
     will-change: transform;
   }
 
+  .row.dragging {
+    /* Ghosted while in flight, so the drop indicator reads as the real
+       position rather than competing with the row's current one. */
+    opacity: 0.4;
+  }
+
   /* One fixed-size slot whatever it holds, so a parent's text and a leaf's
      text at the same depth start at the same x. Its height is one line box,
      which centres the glyph on the row's first line without magic offsets. */
   .bullet {
     flex: none;
     position: relative;
+    /* The handle owns its gestures outright: panning from here is a drag, so
+       the browser must not also scroll the list. */
+    touch-action: none;
+    cursor: grab;
     display: grid;
     place-items: center;
     width: 14px;

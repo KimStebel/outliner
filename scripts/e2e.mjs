@@ -118,6 +118,44 @@ async function swipeAndHold(page, rowText, dx, inspect) {
   return result
 }
 
+/**
+ * Drag a row by its bullet. Uses the real mouse so hit testing, the drag
+ * threshold and the handle's touch-action all take part.
+ */
+async function dragRow(page, rowText, { dy = 0, dx = 0 }) {
+  const handle = page
+    .locator('.row', { hasText: rowText })
+    .first()
+    .locator('.bullet')
+  const box = await handle.boundingBox()
+  const x = box.x + box.width / 2
+  const y = box.y + box.height / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  // Several steps: one jump would clear the threshold without the
+  // intermediate moves that compute the drop target.
+  for (let i = 1; i <= 8; i += 1) {
+    await page.mouse.move(x + (dx * i) / 8, y + (dy * i) / 8)
+  }
+  await page.waitForTimeout(60)
+  const indicator = await page.locator('.drop-indicator').count()
+  await page.mouse.up()
+  await page.waitForTimeout(120)
+  return indicator
+}
+
+/**
+ * Back to the welcome document. The settle wait matters: a queued debounced
+ * write is flushed on pagehide, so clearing storage with one still pending
+ * lets the old document reappear after the reload.
+ */
+async function resetDocument(page) {
+  await page.waitForTimeout(600)
+  await page.evaluate(() => localStorage.clear())
+  await page.reload()
+  await page.waitForSelector('.row')
+}
+
 async function clickRow(page, text) {
   await page.locator('[data-item-id]', { hasText: text }).first().click()
 }
@@ -662,6 +700,91 @@ await page.keyboard.press('Control+z')
 await page.keyboard.press('Control+z')
 await page.waitForTimeout(100)
 equal('undo restores it all', await outlineOf(page), rowsBeforeKeyDelete)
+
+console.log('\ndrag and drop reorders')
+await page.evaluate(() => document.activeElement?.blur())
+// Known starting shape, independent of what earlier sections left behind.
+await resetDocument(page)
+
+const hadIndicator = await dragRow(page, 'Try it', { dy: -260 })
+check('an indicator appears while dragging', hadIndicator === 1)
+check(
+  'the indicator is gone after the drop',
+  (await page.locator('.drop-indicator').count()) === 0,
+)
+const reordered = await outlineOf(page)
+check(
+  'the dragged subtree moved up, children included',
+  reordered.indexOf('Try it') < reordered.indexOf('Welcome'),
+  JSON.stringify(reordered),
+)
+check(
+  'its children came along',
+  reordered[reordered.indexOf('Try it') + 1]?.startsWith('  Edit this line'),
+  JSON.stringify(reordered),
+)
+
+console.log('\ndragging sideways changes nesting')
+await resetDocument(page)
+const beforeNest = await outlineOf(page)
+const indentPx = await page.evaluate(() =>
+  Number.parseFloat(
+    getComputedStyle(document.querySelector('.outline')).getPropertyValue(
+      '--indent',
+    ),
+  ),
+)
+check('the indent is readable from CSS in px', indentPx === 22, String(indentPx))
+
+// 'Try it' sits directly below the last child of 'Welcome'. Dragging it a
+// short way up and one indent to the right should nest it under 'Welcome'.
+await dragRow(page, 'Try it', { dy: -14, dx: indentPx })
+const nested = await outlineOf(page)
+const nestedRow = nested.find((row) => row.trimStart() === 'Try it')
+check(
+  'the row gained a level of nesting',
+  nestedRow?.startsWith('  '),
+  JSON.stringify(nested),
+)
+check(
+  'and its own children went one deeper too',
+  nested.some((row) => row.startsWith('    Edit this line')),
+  JSON.stringify(nested),
+)
+
+console.log('\ndragging is a single undo step')
+await page.locator('header button', { hasText: 'Undo' }).click()
+await page.waitForTimeout(100)
+equal('one undo puts the whole subtree back', await outlineOf(page), beforeNest)
+
+console.log('\na drag cannot drop an item inside itself')
+const beforeSelfDrop = await outlineOf(page)
+// Drag a parent far down, past its own descendants.
+await dragRow(page, 'Welcome', { dy: 120, dx: 3 * indentPx })
+const afterSelfDrop = await outlineOf(page)
+check(
+  'the document is still structurally sound',
+  afterSelfDrop.length === beforeSelfDrop.length,
+  `${beforeSelfDrop.length} -> ${afterSelfDrop.length}`,
+)
+check(
+  'Welcome still has its children',
+  afterSelfDrop[
+    afterSelfDrop.indexOf(afterSelfDrop.find((r) => r.trimStart() === 'Welcome')) +
+      1
+  ]?.trimStart() === 'Return starts a new item',
+  JSON.stringify(afterSelfDrop),
+)
+
+console.log('\ntapping the bullet after a drag does not fold it')
+await resetDocument(page)
+const rowsBeforeTapTest = (await outlineOf(page)).length
+await dragRow(page, 'Try it', { dy: -14, dx: 0 })
+check(
+  'the row is still unfolded after being dragged',
+  (await outlineOf(page)).length === rowsBeforeTapTest,
+  `${rowsBeforeTapTest} -> ${(await outlineOf(page)).length}`,
+)
 
 console.log('\npersistence across reload')
 
