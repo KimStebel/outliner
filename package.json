@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "e2e": "npm run build && node scripts/e2e.mjs"
+    "e2e": "npm run build && node scripts/e2e.mjs",
+    "icons": "node scripts/make-icons.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

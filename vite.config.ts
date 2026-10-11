@@ -1,8 +1,9 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { defineConfig } from 'vitest/config'
+import { serviceWorker } from './build/sw-plugin.ts'
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte(), serviceWorker()],
   server: {
     // Expose on the LAN so the app can be opened from outside this VM, and on
     // a real phone — touch gestures and the virtual keyboard cannot be trusted
@@ -27,6 +28,15 @@ export default defineConfig({
       usePolling: true,
       interval: 300,
     },
+  },
+  preview: {
+    // Same port as the dev server, since that is the one forwarded out of the
+    // VM. Only one of the two runs at a time. Use this to exercise the
+    // service worker, which is deliberately absent from the dev server.
+    host: true,
+    port: 8080,
+    strictPort: true,
+    allowedHosts: true,
   },
   test: {
     include: ['src/**/*.test.ts'],

@@ -1199,6 +1199,117 @@ check(
     (await page.locator('nav').count()) === 0,
 )
 
+console.log('\ninstallability')
+await resetDocument(page)
+const manifestHref = await page.getAttribute('link[rel="manifest"]', 'href')
+check('a manifest is linked', manifestHref === '/manifest.webmanifest')
+const manifest = await page.evaluate(async (href) => {
+  const response = await fetch(href)
+  return response.ok ? response.json() : null
+}, manifestHref)
+check('it parses', manifest !== null)
+check(
+  'with a name and standalone display',
+  manifest?.name === 'Outliner' && manifest?.display === 'standalone',
+  JSON.stringify(manifest && { name: manifest.name, display: manifest.display }),
+)
+check(
+  'and a start_url inside its scope',
+  manifest?.start_url === '/' && manifest?.scope === '/',
+)
+const sizes = (manifest?.icons ?? []).map((icon) => icon.sizes)
+check(
+  'it declares a 192 and a 512 icon',
+  sizes.includes('192x192') && sizes.includes('512x512'),
+  JSON.stringify(sizes),
+)
+check(
+  'one of them is maskable, for round launcher shapes',
+  (manifest?.icons ?? []).some((icon) => icon.purpose === 'maskable'),
+)
+
+const iconStatuses = await page.evaluate(async (icons) => {
+  const results = {}
+  for (const icon of icons) {
+    const response = await fetch(icon.src)
+    results[icon.src] = response.status
+  }
+  return results
+}, manifest?.icons ?? [])
+check(
+  'every declared icon actually exists',
+  Object.values(iconStatuses).every((status) => status === 200),
+  JSON.stringify(iconStatuses),
+)
+check(
+  'iOS has its own touch icon, since it ignores the manifest',
+  (await page.getAttribute('link[rel="apple-touch-icon"]', 'href')) !== null,
+)
+
+console.log('\nthe service worker takes control')
+await page.waitForFunction(
+  () => navigator.serviceWorker.controller !== null,
+  null,
+  {
+    timeout: 10000,
+  },
+)
+check(
+  'the page is controlled by a worker',
+  await page.evaluate(() => navigator.serviceWorker.controller !== null),
+)
+const cached = await page.evaluate(async () => {
+  const names = await caches.keys()
+  const cache = await caches.open(names[0])
+  return (await cache.keys()).map((request) => new URL(request.url).pathname).sort()
+})
+check(
+  'the shell and its assets are precached',
+  cached.includes('/') &&
+    cached.some((path) => path.endsWith('.js')) &&
+    cached.some((path) => path.endsWith('.css')),
+  JSON.stringify(cached),
+)
+
+console.log('\nit works with the network switched off')
+// The real test of the feature: a cold load with no server reachable.
+await page.evaluate(() => {
+  localStorage.clear()
+})
+await page.reload()
+await page.waitForSelector('.row')
+await clickRow(page, 'Edit this line')
+await page.keyboard.press('End')
+await page.keyboard.type(' offline')
+await page.waitForTimeout(700)
+
+await context.setOffline(true)
+await page.reload()
+await page.waitForSelector('.row', { timeout: 10000 })
+check('the app still loads', (await outlineOf(page)).length > 0)
+check(
+  'and the document typed before going offline is intact',
+  (await outlineOf(page)).some((row) => row.includes('Edit this line offline')),
+  JSON.stringify(await outlineOf(page)),
+)
+
+console.log('\nediting continues while offline')
+await clickRow(page, 'Edit this line offline')
+await page.keyboard.press('End')
+await page.keyboard.type('!')
+check(
+  'typing works with no network',
+  (await focusedRowText(page)) === 'Edit this line offline!',
+)
+await page.waitForTimeout(700)
+await page.reload()
+await page.waitForSelector('.row')
+check(
+  'and survives another offline reload',
+  (await outlineOf(page)).some((row) => row.includes('Edit this line offline!')),
+)
+await context.setOffline(false)
+
 console.log('\npersistence across reload')
 
 const beforeReload = await outlineOf(page)
