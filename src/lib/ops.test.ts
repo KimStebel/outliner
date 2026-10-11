@@ -497,19 +497,48 @@ describe('removeSubtree', () => {
     expect(r.undo()).toBe(r.before)
   })
 
-  it('puts the caret at the end of the preceding row', () => {
+  it('moves the caret to the start of the row that follows', () => {
+    const r = apply('ab\ncd', (tx, ctx, doc) =>
+      removeSubtree(tx, ctx, idOf(doc, 'ab')),
+    )
+    expect(r.after).toBe('cd')
+    expect(r.caret).toEqual({ id: 'i2', offset: 0 })
+  })
+
+  it('skips over the deleted subtree rather than into it', () => {
+    // The row after 'a' in visible order is its own child, which is about to
+    // stop existing; the caret has to clear the whole subtree.
+    const r = apply(
+      outline`
+        a
+          b
+            c
+        d
+      `,
+      (tx, ctx, doc) => removeSubtree(tx, ctx, idOf(doc, 'a')),
+    )
+    expect(r.after).toBe('d')
+    expect(r.caret).toEqual({ id: 'i4', offset: 0 })
+  })
+
+  it('falls back to the end of the preceding row when nothing follows', () => {
     const r = apply('ab\ncd', (tx, ctx, doc) =>
       removeSubtree(tx, ctx, idOf(doc, 'cd')),
     )
     expect(r.caret).toEqual({ id: 'i1', offset: 2 })
   })
 
-  it('falls forward to the next row when deleting the first one', () => {
-    const r = apply('ab\ncd', (tx, ctx, doc) =>
-      removeSubtree(tx, ctx, idOf(doc, 'ab')),
+  it('falls back past a subtree to the preceding row', () => {
+    const r = apply(
+      outline`
+        a
+        b
+          c
+      `,
+      (tx, ctx, doc) => removeSubtree(tx, ctx, idOf(doc, 'b')),
     )
-    expect(r.after).toBe('cd')
-    expect(r.caret).toEqual({ id: 'i2', offset: 2 })
+    expect(r.after).toBe('a')
+    expect(r.caret).toEqual({ id: 'i1', offset: 1 })
   })
 
   it('does not aim the caret at a row inside the deleted subtree', () => {

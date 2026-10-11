@@ -203,6 +203,27 @@ export function nextVisible(doc: Doc, id: ItemId): ItemId | undefined {
   return undefined
 }
 
+/**
+ * The next visible row that is *not* inside `id`'s subtree.
+ *
+ * {@link nextVisible} descends into children first, so for a parent it returns
+ * its own first child. When the subtree is about to be deleted that is the one
+ * answer that is never useful, so this skips straight past it.
+ */
+export function nextVisibleOutsideSubtree(
+  doc: Doc,
+  id: ItemId,
+): ItemId | undefined {
+  let cursor = getItem(doc, id)
+  while (cursor.parent !== null) {
+    const parent = getItem(doc, cursor.parent)
+    const sibling = parent.children[parent.children.indexOf(cursor.id) + 1]
+    if (sibling !== undefined) return sibling
+    cursor = parent
+  }
+  return undefined
+}
+
 export function previousVisible(doc: Doc, id: ItemId): ItemId | undefined {
   const item = getItem(doc, id)
   if (item.parent === null) return undefined

@@ -15,8 +15,8 @@ import type { Caret, Doc, ItemId } from './model'
 import {
   createItem,
   getItem,
+  nextVisibleOutsideSubtree,
   previousVisible,
-  nextVisible,
   subtreeIds,
 } from './model'
 import type { Tx } from './tx'
@@ -274,20 +274,25 @@ export function outdentItem(tx: Tx, id: ItemId): null {
 /**
  * Delete an item and everything under it — the swipe-right gesture.
  *
- * Returns the caret for the row that takes its place: the preceding visible
- * row, else the following one. The document is never left empty; see
- * {@link ensureNonEmpty}.
+ * The caret moves to the row that *follows* the deleted subtree, at its start:
+ * the list closes up under the caret and editing carries on downwards. Only
+ * when nothing follows does it fall back to the preceding row, landing at the
+ * end of that text.
+ *
+ * The document is never left empty; see {@link ensureNonEmpty}.
  */
 export function removeSubtree(tx: Tx, ctx: OpContext, id: ItemId): Caret | null {
   const item = tx.get(id)
   if (item.parent === null) return null
 
-  // Resolve the caret target before the subtree stops existing.
-  const fallbackId = previousVisible(tx.doc, id) ?? nextVisible(tx.doc, id)
-  const fallback =
-    fallbackId !== undefined && !subtreeIds(tx.doc, id).includes(fallbackId)
-      ? fallbackId
-      : undefined
+  // Resolve the caret target before the subtree stops existing. Neither
+  // candidate can be inside it: one skips past the subtree, the other
+  // precedes it.
+  const following = nextVisibleOutsideSubtree(tx.doc, id)
+  const preceding =
+    following === undefined ? previousVisible(tx.doc, id) : undefined
+  const precedingLength =
+    preceding === undefined ? 0 : getItem(tx.doc, preceding).text.length
 
   const doomed = subtreeIds(tx.doc, id)
   const parentId = item.parent
@@ -299,9 +304,8 @@ export function removeSubtree(tx: Tx, ctx: OpContext, id: ItemId): Caret | null 
     tx.remove(doomedId)
   }
 
-  if (fallback !== undefined) {
-    return { id: fallback, offset: getItem(tx.doc, fallback).text.length }
-  }
+  if (following !== undefined) return { id: following, offset: 0 }
+  if (preceding !== undefined) return { id: preceding, offset: precedingLength }
   return ensureNonEmpty(tx, ctx)
 }
 

@@ -529,7 +529,6 @@ check(
   !afterSwipe.some((r) => r.includes('Tab indents')),
   JSON.stringify(afterSwipe),
 )
-check('the undo toast appears', await page.locator('.toast').isVisible())
 // Swiping is not an editing gesture; focusing a neighbour afterwards would
 // pop the on-screen keyboard open over a list the user was only tidying.
 check(
@@ -541,11 +540,10 @@ check(
   !(await page.locator('.bar').isVisible()),
 )
 
-console.log('\nthe toast undoes the deletion')
-await page.locator('.toast button').click()
+console.log('\nthe header undo restores a swiped row')
+await page.locator('header button', { hasText: 'Undo' }).click()
 await page.waitForTimeout(100)
 equal('undo restores the row', await outlineOf(page), beforeSwipe)
-check('the toast goes away', !(await page.locator('.toast').isVisible()))
 
 console.log('\nswiping a parent takes its children and says so')
 await swipe(page, 'Welcome', 260)
@@ -555,34 +553,65 @@ check(
   !afterParent.some((r) => r.includes('Welcome') || r.includes('Return starts')),
   JSON.stringify(afterParent),
 )
-const toastText = await page.locator('.toast .message').textContent()
-check(
-  'the toast reports how many nested items went with it',
-  /nested items/.test(toastText),
-  JSON.stringify(toastText),
-)
-await page.locator('.toast button').click()
+await page.locator('header button', { hasText: 'Undo' }).click()
 await page.waitForTimeout(100)
 check(
   'undo brings the whole subtree back',
   (await outlineOf(page)).length === beforeSwipe.length,
 )
 
-console.log('\nkeyboard delete is available too')
-// Target whatever the first row happens to be by now, rather than a label
-// earlier tests may have merged away.
-await page.locator('[data-item-id]').first().click()
-const beforeKeyDelete = (await outlineOf(page)).length
-await page.keyboard.press('Control+Shift+Backspace')
+console.log('\nctrl-enter deletes from the keyboard')
+// Build a known pair of siblings rather than relying on whatever earlier
+// tests left behind, so the caret target is unambiguous.
+await page.locator('[data-item-id]').last().click()
+await page.keyboard.press('End')
+await page.keyboard.press('Enter')
+await page.keyboard.type('DOOMED')
+await page.keyboard.press('Enter')
+await page.keyboard.type('SURVIVOR')
+await clickRow(page, 'DOOMED')
+const rowsBeforeKeyDelete = await outlineOf(page)
+
+await page.keyboard.press('Control+Enter')
+await page.waitForTimeout(100)
+const afterKeyDelete = await outlineOf(page)
+check(
+  'ctrl-enter deletes the row',
+  !afterKeyDelete.some((row) => row.includes('DOOMED')),
+  JSON.stringify(afterKeyDelete),
+)
+// The caret follows the list downwards rather than jumping backwards.
+check(
+  'the caret lands on the row below, not the one above',
+  (await focusedRowText(page)) === 'SURVIVOR',
+  `focus on ${JSON.stringify(await focusedRowText(page))}`,
+)
+check('at its start', (await caretOffset(page)) === 0)
+check('no toast is shown', (await page.locator('.toast').count()) === 0)
+
+console.log('\nctrl-enter on a parent skips its children')
+await clickRow(page, 'SURVIVOR')
+await page.keyboard.press('Tab') // nest SURVIVOR under the row above it
+await page.waitForTimeout(80)
+const parentRow = (await outlineOf(page)).at(-2)?.trimStart()
+await clickRow(page, parentRow)
+await page.keyboard.press('Control+Enter')
 await page.waitForTimeout(100)
 check(
-  'ctrl-shift-backspace deletes the subtree',
-  (await outlineOf(page)).length < beforeKeyDelete,
+  'the nested child went with the parent',
+  !(await outlineOf(page)).some((row) => row.includes('SURVIVOR')),
 )
-check('it shows the same undo toast', await page.locator('.toast').isVisible())
-await page.locator('.toast button').click()
+check(
+  'the caret did not land inside the deleted subtree',
+  (await focusedRowText(page)) !== 'SURVIVOR',
+  `focus on ${JSON.stringify(await focusedRowText(page))}`,
+)
+
+await page.keyboard.press('Control+z')
+await page.keyboard.press('Control+z')
+await page.keyboard.press('Control+z')
 await page.waitForTimeout(100)
-check('and undoes cleanly', (await outlineOf(page)).length === beforeKeyDelete)
+equal('undo restores it all', await outlineOf(page), rowsBeforeKeyDelete)
 
 console.log('\npersistence across reload')
 

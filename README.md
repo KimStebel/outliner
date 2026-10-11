@@ -157,12 +157,17 @@ arrive.
   phone keyboard has no Tab key, so there is no other way to nest. It shows
   whenever a row is focused on a touch device, and its buttons disable
   themselves when the operation would be a no-op.
-- **Swipe a row right to delete it and its children**, with an undo toast for
-  six seconds. The gesture locks direction after 8px and only claims clearly
-  rightward travel, so vertical scrolling is untouched; it commits past 35% of
-  the row's width. Mouse drags are ignored, since inside a row those are text
-  selection. Ctrl/Cmd-Shift-Backspace does the same thing from a keyboard, so
-  deleting a subtree is not touch-only.
+- **Swipe a row right to delete it and its children.** The gesture locks
+  direction after 8px and only claims clearly rightward travel, so vertical
+  scrolling is untouched; it commits past 35% of the row's width. Mouse drags
+  are ignored, since inside a row those are text selection.
+  **Ctrl/Cmd-Enter** does the same from a keyboard, so deleting a subtree is
+  not touch-only. Undo is the header button or Ctrl/Cmd-Z.
+- **After a delete the caret moves to the row _below_** the deleted subtree, at
+  its start, so the list closes up under the caret and editing carries on
+  downwards. It falls back to the end of the preceding row only when nothing
+  follows. Note this cannot use `nextVisible`: for a parent that returns its
+  own first child, which is inside the subtree being deleted.
 - **Deleting by swipe does not move focus.** Focusing a neighbouring row would
   pop the keyboard open over a list the user was only tidying. The keyboard
   shortcut does keep the caret, because there the user is demonstrably typing.
@@ -178,7 +183,7 @@ own paste interception and suppression of the bold/italic/underline shortcuts.
 - [x] **1** Document model + ops + undo stack (headless, unit-tested)
 - [x] **2** List renderer, per-item `contenteditable`, Enter/Backspace/arrows
 - [x] **4** Toolbar pinned above the virtual keyboard (indent/outdent)
-- [x] **3** Swipe-right to delete subtree, with undo toast
+- [x] **3** Swipe-right to delete subtree (undo via header / Ctrl-Z)
 - [ ] **5** Collapse/expand and zoom-into-item with breadcrumb
 - [ ] **6** Perf pass on large lists; PWA manifest + offline
 - [ ] **7** Desktop: keyboard shortcuts, drag-reorder, wider layout
