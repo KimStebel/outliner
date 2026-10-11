@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ItemId } from './model'
   import { segmentText } from './linkify'
+  import type { DragStart } from './drag'
 
   interface Props {
     id: ItemId
@@ -13,8 +14,8 @@
     register: (id: ItemId, el: HTMLElement | null) => void
     ontoggle: (id: ItemId) => void
     ondelete: (id: ItemId) => void
-    /** Pointer went down on the drag handle; the parent decides if it drags. */
-    ondraghandle: (id: ItemId, event: PointerEvent) => void
+    /** A drag is beginning. The parent owns everything from here. */
+    ondragstart: (id: ItemId, start: DragStart) => void
     /** True while this row is the one being dragged. */
     dragging: boolean
     /** True while the caret is in this row. */
@@ -31,7 +32,7 @@
     register,
     ontoggle,
     ondelete,
-    ondraghandle,
+    ondragstart,
     dragging,
     focused,
   }: Props = $props()
@@ -95,6 +96,15 @@
   const MIN_COMMIT_PX = 72
   const COMMIT_FRACTION = 0.35
 
+  /**
+   * Hold anywhere on a row to pick it up. Shorter than the ~500ms at which
+   * phones begin their own text selection, so the drag wins that race; long
+   * enough that pausing before a scroll does not pick the row up by accident.
+   */
+  const LONG_PRESS_MS = 400
+  /** Movement that means this was a scroll or a swipe, not a hold. */
+  const LONG_PRESS_SLOP_PX = 8
+
   let swipeEl: HTMLElement | undefined = $state()
   let offset = $state(0)
   let sliding = $state(false)
@@ -104,6 +114,7 @@
   let startY = 0
   let locked: 'undecided' | 'swipe' | 'scroll' = 'undecided'
   let commitAt = MIN_COMMIT_PX
+  let longPress: ReturnType<typeof setTimeout> | null = null
 
   const armed = $derived(offset >= commitAt)
 
@@ -111,8 +122,7 @@
     // Mouse drags inside a row are text selection, so leave them alone; swipe
     // is a touch gesture. Desktop deletes rows by other means.
     if (event.pointerType === 'mouse') return
-    // The bullet is the drag handle; a gesture starting there is a move, not
-    // a swipe, and the two must not both claim it.
+    // The bullet starts a drag directly and must not also arm a swipe.
     if (event.target instanceof Element && event.target.closest('.bullet')) return
     // Dragging a selection handle also produces pointer events here.
     const selection = window.getSelection()
@@ -124,6 +134,30 @@
     locked = 'undecided'
     const width = swipeEl?.getBoundingClientRect().width ?? 0
     commitAt = Math.max(MIN_COMMIT_PX, width * COMMIT_FRACTION)
+
+    // While a row is focused, a hold means "select this text" — overriding it
+    // would take away the only way to select inside a row being edited. The
+    // bullet still works for dragging in that case.
+    if (focused) return
+
+    const start = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      immediate: true,
+    }
+    longPress = setTimeout(() => {
+      longPress = null
+      // Abandon any swipe this press had started to arm.
+      release()
+      ondragstart(id, start)
+    }, LONG_PRESS_MS)
+  }
+
+  function cancelLongPress(): void {
+    if (longPress === null) return
+    clearTimeout(longPress)
+    longPress = null
   }
 
   function onPointerMove(event: PointerEvent): void {
@@ -131,6 +165,10 @@
 
     const dx = event.clientX - startX
     const dy = event.clientY - startY
+
+    if (Math.abs(dx) > LONG_PRESS_SLOP_PX || Math.abs(dy) > LONG_PRESS_SLOP_PX) {
+      cancelLongPress()
+    }
 
     if (locked === 'undecided') {
       if (Math.abs(dx) < DIRECTION_LOCK_PX && Math.abs(dy) < DIRECTION_LOCK_PX) {
@@ -159,6 +197,7 @@
   }
 
   function onPointerUp(event: PointerEvent): void {
+    cancelLongPress()
     if (activePointer !== event.pointerId) return
     const commit = locked === 'swipe' && offset >= commitAt
     release()
@@ -166,8 +205,19 @@
   }
 
   function onPointerCancel(event: PointerEvent): void {
+    cancelLongPress()
     if (activePointer !== event.pointerId) return
     release()
+  }
+
+  /** The bullet waits for travel, so a plain click still folds the row. */
+  function fromEvent(event: PointerEvent): DragStart {
+    return {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      immediate: false,
+    }
   }
 
   function release(): void {
@@ -211,7 +261,7 @@
         class="bullet interactive"
         class:collapsed
         onclick={() => ontoggle(id)}
-        onpointerdown={(event) => ondraghandle(id, event)}
+        onpointerdown={(event) => ondragstart(id, fromEvent(event))}
         aria-expanded={!collapsed}
         aria-label={collapsed ? 'Expand' : 'Collapse'}
         tabindex="-1"
@@ -227,7 +277,7 @@
       <span
         class="bullet leaf"
         aria-hidden="true"
-        onpointerdown={(event) => ondraghandle(id, event)}
+        onpointerdown={(event) => ondragstart(id, fromEvent(event))}
       ></span>
     {/if}
 

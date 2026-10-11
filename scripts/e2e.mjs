@@ -156,6 +156,44 @@ async function resetDocument(page) {
   await page.waitForSelector('.row')
 }
 
+/**
+ * Hold a finger on a row's text (not its bullet) and then move, the way a
+ * long-press drag works on a phone.
+ */
+async function longPressDrag(
+  page,
+  rowText,
+  { dy = 0, dx = 0, hold = 500, steps = 8 },
+) {
+  const row = page.locator('.swipe', { hasText: rowText }).first()
+  const box = await row.boundingBox()
+  // Well clear of the bullet, to prove the whole row is a handle.
+  const x0 = box.x + box.width * 0.6
+  const y0 = box.y + box.height / 2
+  const send = (type, x, y) =>
+    row.dispatchEvent(type, {
+      pointerId: 7,
+      pointerType: 'touch',
+      isPrimary: true,
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      cancelable: true,
+    })
+
+  await send('pointerdown', x0, y0)
+  await page.waitForTimeout(hold)
+  const grabbed = await page.locator('.row.dragging').count()
+  for (let i = 1; i <= steps; i += 1) {
+    await send('pointermove', x0 + (dx * i) / steps, y0 + (dy * i) / steps)
+  }
+  await page.waitForTimeout(60)
+  const indicator = await page.locator('.drop-indicator').count()
+  await send('pointerup', x0 + dx, y0 + dy)
+  await page.waitForTimeout(120)
+  return { grabbed, indicator }
+}
+
 async function clickRow(page, text) {
   await page.locator('[data-item-id]', { hasText: text }).first().click()
 }
@@ -986,6 +1024,69 @@ check(
   `${narrow.scrollW} > ${narrow.clientW}`,
 )
 await page.setViewportSize({ width: 390, height: 844 })
+
+console.log('\nlong-press anywhere on a row to drag it')
+await resetDocument(page)
+const beforeLongPress = await outlineOf(page)
+const held = await longPressDrag(page, 'Try it', { dy: -260 })
+check('holding the row text picks it up', held.grabbed > 0)
+check('a drop indicator follows the finger', held.indicator === 1)
+const afterLongPress = await outlineOf(page)
+check(
+  'the row moved',
+  afterLongPress.indexOf('Try it') < beforeLongPress.indexOf('Try it'),
+  JSON.stringify(afterLongPress),
+)
+check(
+  'its children came with it',
+  afterLongPress[afterLongPress.indexOf('Try it') + 1]?.startsWith(
+    '  Edit this line',
+  ),
+  JSON.stringify(afterLongPress),
+)
+check(
+  'the page is left selectable again',
+  await page.evaluate(() => !document.body.classList.contains('is-dragging-row')),
+)
+
+console.log('\nmoving before the hold completes is a scroll, not a drag')
+await resetDocument(page)
+const beforeQuick = await outlineOf(page)
+const quick = await longPressDrag(page, 'Try it', { dy: -260, hold: 80 })
+check('nothing was picked up', quick.grabbed === 0)
+equal('and the outline is unchanged', await outlineOf(page), beforeQuick)
+
+console.log('\nholding a row that is being edited still selects text')
+await resetDocument(page)
+await clickRow(page, 'Try it')
+await page.waitForTimeout(100)
+const whileEditing = await longPressDrag(page, 'Try it', { dy: -120 })
+check('a focused row is not picked up by a hold', whileEditing.grabbed === 0)
+check(
+  'so the bullet remains the way to drag it',
+  (await page
+    .locator('.row', { hasText: 'Try it' })
+    .first()
+    .locator('.bullet')
+    .count()) === 1,
+)
+
+console.log('\nthe bullet still drags without any hold')
+await resetDocument(page)
+const beforeBullet = await outlineOf(page)
+await dragRow(page, 'Try it', { dy: -260 })
+check(
+  'a bullet drag needs no long press',
+  (await outlineOf(page)).indexOf('Try it') < beforeBullet.indexOf('Try it'),
+)
+
+console.log('\nswipe to delete still works alongside the hold')
+await resetDocument(page)
+await swipe(page, 'Tab indents', 260)
+check(
+  'a quick swipe still deletes',
+  !(await outlineOf(page)).some((row) => row.includes('Tab indents')),
+)
 
 console.log('\npersistence across reload')
 

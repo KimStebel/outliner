@@ -4,7 +4,7 @@
   import Dock from './Dock.svelte'
   import KeyboardBar from './KeyboardBar.svelte'
   import { viewport } from './viewport.svelte'
-  import { projectDrop, type DropTarget } from './drag'
+  import { projectDrop, type DragStart, type DropTarget } from './drag'
   import type { DocStore } from './store'
   import type { ItemId } from './model'
   import {
@@ -272,19 +272,57 @@
   /** Set after a real drag so the handle's click does not also fold the row. */
   let dragJustEnded = false
 
-  function handleDragHandle(id: ItemId, event: PointerEvent): void {
-    if (event.pointerType === 'mouse' && event.button !== 0) return
+  function handleDragStart(id: ItemId, start: DragStart): void {
     press = {
       id,
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
+      pointerId: start.pointerId,
+      startX: start.clientX,
+      startY: start.clientY,
     }
-    pointerX = event.clientX
-    pointerY = event.clientY
+    pointerX = start.clientX
+    pointerY = start.clientY
     window.addEventListener('pointermove', onDragMove)
     window.addEventListener('pointerup', onDragEnd)
     window.addEventListener('pointercancel', onDragEnd)
+    if (start.immediate) activateDrag(id)
+  }
+
+  function activateDrag(id: ItemId): void {
+    draggingId = id
+    startAutoScroll()
+    seizeGestures()
+    updateDropTarget()
+  }
+
+  /**
+   * Take the gesture away from the browser for the duration of the drag.
+   *
+   * Rows carry `touch-action: pan-y` so the list scrolls normally, which means
+   * the browser would start scrolling the moment a held finger moves. A
+   * non-passive `touchmove` listener that cancels the event is the only way to
+   * stop that once the gesture is already under way — `touch-action` is read
+   * when the touch begins and changing it now would be ignored.
+   *
+   * A hold also puts phones into text selection, so any selection made on the
+   * way here is dropped and further selection suppressed until the drop.
+   */
+  function seizeGestures(): void {
+    window.getSelection()?.removeAllRanges()
+    document.body.classList.add('is-dragging-row')
+    document.addEventListener('touchmove', blockEvent, { passive: false })
+    document.addEventListener('contextmenu', blockEvent)
+    // A short tick confirms the pick-up where the device supports it.
+    navigator.vibrate?.(8)
+  }
+
+  function releaseGestures(): void {
+    document.body.classList.remove('is-dragging-row')
+    document.removeEventListener('touchmove', blockEvent)
+    document.removeEventListener('contextmenu', blockEvent)
+  }
+
+  function blockEvent(event: Event): void {
+    if (event.cancelable) event.preventDefault()
   }
 
   function onDragMove(event: PointerEvent): void {
@@ -298,11 +336,10 @@
         event.clientY - press.startY,
       )
       if (travelled < DRAG_THRESHOLD_PX) return
-      draggingId = press.id
-      startAutoScroll()
+      activateDrag(press.id)
     }
 
-    event.preventDefault()
+    if (event.cancelable) event.preventDefault()
     updateDropTarget()
   }
 
@@ -312,6 +349,7 @@
     window.removeEventListener('pointerup', onDragEnd)
     window.removeEventListener('pointercancel', onDragEnd)
     stopAutoScroll()
+    releaseGestures()
 
     const moved = draggingId
     const target = dropTarget
@@ -629,7 +667,7 @@
       {register}
       ontoggle={handleToggle}
       ondelete={(id) => handleDelete(id, false)}
-      ondraghandle={handleDragHandle}
+      ondragstart={handleDragStart}
       focused={activeId === row.id}
       dragging={draggingIds?.has(row.id) ?? false}
     />

@@ -10,6 +10,19 @@
 import type { Doc, ItemId, Row } from './model'
 import { getItem } from './model'
 
+/** Where a drag began, as reported by whichever element started it. */
+export interface DragStart {
+  pointerId: number
+  clientX: number
+  clientY: number
+  /**
+   * Start dragging at once rather than waiting for travel. A long press has
+   * already expressed the intent; the bullet, which must also work with a
+   * mouse, waits for movement so a plain click still folds the row.
+   */
+  immediate: boolean
+}
+
 export interface DropTarget {
   parentId: ItemId
   /** Insert directly after this sibling, or at the start when `null`. */

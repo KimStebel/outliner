@@ -69,6 +69,15 @@ body {
   flex-direction: column;
 }
 
+/* While a row is in flight, nothing on the page should be selectable: a long
+   press is how the drag starts, and that is also how phones begin selecting
+   text. */
+body.is-dragging-row,
+body.is-dragging-row * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* Remove the grey flash when tapping a row on mobile WebKit. */
 * {
   -webkit-tap-highlight-color: transparent;

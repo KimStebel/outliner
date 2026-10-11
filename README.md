@@ -153,6 +153,12 @@ arrive.
   `text/plain`.
 - **Tapping below the list** appends a sibling of the last row — the same thing
   pressing Enter there would do.
+- **Long-press anywhere on a row to drag it** on touch, so the small bullet is
+  not the only handle. The hold is 400ms — under the ~500ms at which phones
+  start selecting text, so the drag wins that race — and any movement before it
+  elapses cancels it, leaving scrolling and swipe-to-delete untouched. A row
+  that is currently being edited is exempt: there a hold still means "select
+  this text", and its bullet remains the way to drag it.
 - **Drag a bullet to move an item**, children included. Vertical travel picks
   the gap between rows; horizontal travel picks the depth, which is what makes
   a drag able to re-parent rather than only reorder. The depth is clamped to
