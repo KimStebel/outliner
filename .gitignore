@@ -1,3 +1,6 @@
+#Secrets
+prod-env
+
 # Logs
 logs
 *.log
