@@ -42,7 +42,10 @@ npm install
 `npm run dev` serves on **port 8080**, bound to `0.0.0.0`, so it is reachable
 from outside this VM as well as from a phone on the same network. The port is
 `strictPort`, so a clash fails loudly rather than silently moving to 8081 and
-landing on a port nothing forwards to.
+landing on a port nothing forwards to. `allowedHosts: true` accepts any `Host`
+header, so reaching the VM by hostname, alias, or tunnel works — note that this
+turns off Vite's DNS-rebinding protection, so it suits a trusted network. It is
+a dev-server setting only and has no effect on `build` or `preview`.
 
 Test on a real phone where you can — touch gestures, momentum scrolling, and
 virtual-keyboard behaviour are not faithfully reproduced by desktop device

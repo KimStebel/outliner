@@ -12,6 +12,12 @@ export default defineConfig({
     // Fail instead of quietly moving to 8081, which would not be the port
     // forwarded to the host.
     strictPort: true,
+    // Accept any Host header. Vite otherwise rejects requests whose hostname
+    // it does not recognise, which blocks reaching the VM by hostname, through
+    // a tunnel, or via any forwarding alias. This disables Vite's DNS-rebinding
+    // protection, so keep it to trusted networks — it is a dev-only setting and
+    // does not affect `build` or `preview`.
+    allowedHosts: true,
   },
   test: {
     include: ['src/**/*.test.ts'],
