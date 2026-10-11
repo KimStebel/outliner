@@ -81,6 +81,9 @@
        hit target — phase 3 needs that for the swipe gesture. */
     padding-left: calc(var(--depth) * var(--indent));
     padding-block: var(--row-pad-y);
+    /* `scrollIntoView` works in the layout viewport and knows nothing about
+       the keyboard bar overlaying the bottom, so reserve room for it. */
+    scroll-margin-block: 1rem 4.5rem;
   }
 
   /* The bullet occupies exactly the dot's size in layout, so parents and

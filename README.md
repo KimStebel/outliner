@@ -96,13 +96,14 @@ so a keystroke does not recompute the row list.
 
 ### The UI layer
 
-| File               | Role                                                  |
-| ------------------ | ----------------------------------------------------- |
-| `editor.svelte.ts` | Wraps the doc in `$state` and hands it to the store.  |
-| `caret.ts`         | DOM selection <-> character offsets; line geometry.   |
-| `Outline.svelte`   | Renders rows; owns all key, input and paste handling. |
-| `Row.svelte`       | One row: bullet plus its `contenteditable`.           |
-| `welcome.ts`       | The first-run document.                               |
+| File                 | Role                                                  |
+| -------------------- | ----------------------------------------------------- |
+| `editor.svelte.ts`   | Wraps the doc in `$state` and hands it to the store.  |
+| `caret.ts`           | DOM selection <-> character offsets; line geometry.   |
+| `Outline.svelte`     | Renders rows; owns all key, input and paste handling. |
+| `Row.svelte`         | One row: bullet plus its `contenteditable`.           |
+| `KeyboardBar.svelte` | Indent/outdent docked above the on-screen keyboard.   |
+| `welcome.ts`         | The first-run document.                               |
 
 Three things carry the weight here:
 
@@ -119,6 +120,15 @@ and handlers can find their row from `data-item-id`.
 browser should keep moving the caret and we only take over at the real first or
 last visual line — an `offset === 0` test would jump rows from the middle of a
 wrapped line.
+
+**The keyboard bar is positioned against the visual viewport.** `position:
+fixed` resolves against the _layout_ viewport, which does not shrink when the
+keyboard opens, so a bar pinned to `bottom: 0` ends up behind the keyboard. The
+bar instead sits at the bottom of a click-through wrapper whose height tracks
+`visualViewport.offsetTop + height`. Its buttons act on `pointerdown` with the
+default suppressed: allowing the default would move focus to the button, blur
+the row, close the keyboard, and unmount the bar before a `click` could ever
+arrive.
 
 ### Editing semantics worth knowing
 
@@ -143,6 +153,10 @@ wrapped line.
   `text/plain`.
 - **Tapping below the list** appends a sibling of the last row — the same thing
   pressing Enter there would do.
+- **Indent and outdent on mobile** come from a bar docked above the keyboard; a
+  phone keyboard has no Tab key, so there is no other way to nest. It shows
+  whenever a row is focused on a touch device, and its buttons disable
+  themselves when the operation would be a no-op.
 
 `contenteditable="plaintext-only"` is used where supported, but it is
 feature-detected rather than assumed: an unrecognised value maps to `inherit`,
@@ -154,8 +168,8 @@ own paste interception and suppression of the bold/italic/underline shortcuts.
 - [x] **0** Toolchain, scaffold, base styles, debounced persistence helper
 - [x] **1** Document model + ops + undo stack (headless, unit-tested)
 - [x] **2** List renderer, per-item `contenteditable`, Enter/Backspace/arrows
+- [x] **4** Toolbar pinned above the virtual keyboard (indent/outdent)
 - [ ] **3** Swipe-right to delete subtree, with undo toast
-- [ ] **4** Toolbar pinned above the virtual keyboard (indent/outdent/collapse)
 - [ ] **5** Collapse/expand and zoom-into-item with breadcrumb
 - [ ] **6** Perf pass on large lists; PWA manifest + offline
 - [ ] **7** Desktop: keyboard shortcuts, drag-reorder, wider layout

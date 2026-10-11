@@ -1,9 +1,10 @@
 <script lang="ts">
   import { tick } from 'svelte'
   import Row from './Row.svelte'
+  import KeyboardBar from './KeyboardBar.svelte'
   import type { DocStore } from './store'
   import type { ItemId } from './model'
-  import { nextVisible, previousVisible } from './model'
+  import { findItem, nextVisible, previousSibling, previousVisible } from './model'
   import {
     caretOffsetIn,
     hasCollapsedSelection,
@@ -145,6 +146,69 @@
     const range = selectionRangeIn(el) ?? { start: 0, end: 0 }
     syncText(id, el)
     store.replaceRange(id, range.start, range.end, text)
+    void afterEdit()
+  }
+
+  // ---------------------------------------------------------------------------
+  // Which row is being edited
+  //
+  // Drives the keyboard bar. Tracked separately from `store.caret` because the
+  // bar must appear and disappear reactively, and the store's caret is plain
+  // state.
+  // ---------------------------------------------------------------------------
+
+  let activeId = $state<ItemId | null>(null)
+  let blurTimer: ReturnType<typeof setTimeout> | null = null
+
+  function handleFocusIn(event: FocusEvent): void {
+    const id = rowIdFor(event)
+    if (id === null) return
+    if (blurTimer !== null) {
+      clearTimeout(blurTimer)
+      blurTimer = null
+    }
+    activeId = id
+  }
+
+  function handleFocusOut(): void {
+    // A structural edit destroys the focused row and focuses its replacement,
+    // which is a blur followed immediately by a focus. Waiting a moment before
+    // believing the blur keeps the bar from flickering on every Enter.
+    if (blurTimer !== null) clearTimeout(blurTimer)
+    blurTimer = setTimeout(() => {
+      activeId = null
+      blurTimer = null
+    }, 120)
+  }
+
+  const canIndent = $derived.by(() => {
+    if (activeId === null || findItem(store.doc, activeId) === undefined)
+      return false
+    return previousSibling(store.doc, activeId) !== undefined
+  })
+
+  const canOutdent = $derived.by(() => {
+    if (activeId === null) return false
+    const item = findItem(store.doc, activeId)
+    if (item === undefined || item.parent === null) return false
+    return item.parent !== store.doc.rootId
+  })
+
+  function indentActive(): void {
+    runOnActive((id) => store.indent(id))
+  }
+
+  function outdentActive(): void {
+    runOnActive((id) => store.outdent(id))
+  }
+
+  function runOnActive(operation: (id: ItemId) => void): void {
+    const id = activeId
+    if (id === null) return
+    const el = elements.get(id)
+    if (el === undefined) return
+    syncText(id, el)
+    operation(id)
     void afterEdit()
   }
 
@@ -300,6 +364,8 @@
   oninput={handleInput}
   onpaste={handlePaste}
   onpointerdown={handleBackgroundPointerDown}
+  onfocusin={handleFocusIn}
+  onfocusout={handleFocusOut}
 >
   {#each rows as row (row.id)}
     <Row
@@ -314,6 +380,14 @@
     />
   {/each}
 </div>
+
+<KeyboardBar
+  editing={activeId !== null}
+  {canIndent}
+  {canOutdent}
+  onindent={indentActive}
+  onoutdent={outdentActive}
+/>
 
 <style>
   .outline {

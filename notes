@@ -1,0 +1,23 @@
+0 — Setup. Install Node (nvm), scaffold Vite + Svelte 5 + TS strict, Prettier, Vitest. Persist to localStorage (debounced); IndexedDB later if size demands.
+
+  1 — Model + ops + undo, headless. Pure TS, unit-tested, zero UI. Fast to get right and it's the whole app's spine.
+
+  2 — The editor. Flattened render, one editable row per item, indent via padding-left. Behaviours: Enter splits at caret → new sibling, focus+caret at offset 0; Enter on empty item → outdent (Workflowy's trick, and the only ergonomic way to leave a nesting level on mobile); Backspace at offset 0 → merge into
+  previous row; Arrow up/down → move caret across rows.
+
+  3 — Swipe right to delete. Pointer Events + CSS transform, threshold ~35% of width with velocity consideration, touch-action: pan-y so vertical scroll still wins. Deletes the subtree and shows an undo toast for ~5s.
+
+  4 — Keyboard toolbar. A bar pinned above the virtual keyboard (positioned via the VisualViewport API) with outdent / indent / collapse / delete. Mobile has no Tab key — without this, nesting is unreachable, so it's not optional polish.
+
+  5 — Collapse + zoom. Tap the bullet to zoom into an item as the temporary root, with a breadcrumb back. Cheap to add given the flat model, and it's what makes big lists usable on a small screen.
+
+  6 — Perf + offline. Profile typing on a 1000-item list, add windowing only if measurement says so, PWA manifest + service worker so it installs to the home screen and works offline.
+
+  7 — Desktop. Tab/Shift+Tab, Alt+↑/↓ to move items, Ctrl/Cmd+Z/Shift+Z, hover affordances, drag-to-reorder, wider centred column, optional multi-select across items.
+
+  Phases 0–3 give you a usable daily driver; 4–5 make it pleasant.
+
+  Two notes on scope: I'd keep phases 1 and 2 separate even though it feels slower, because debugging tree ops through a caret is miserable. And when the backend arrives, the swap is child-array ordering → fractional indices, which keeps concurrent edits mergeable — worth knowing now, not worth building now.
+
+  Want me to start at phase 0, or adjust the framework pick or phase order first?
+

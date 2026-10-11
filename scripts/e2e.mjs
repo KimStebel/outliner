@@ -70,10 +70,28 @@ async function clickRow(page, text) {
   await page.locator('[data-item-id]', { hasText: text }).first().click()
 }
 
+// `detached` puts the server in its own process group. npx launches vite via a
+// shell, so killing the direct child would orphan the node process and leave
+// the port bound; killing the group takes the whole tree.
 const server = spawn('npx', ['vite', 'preview', '--port', String(PORT)], {
   stdio: ['ignore', 'pipe', 'pipe'],
+  detached: true,
 })
-process.on('exit', () => server.kill('SIGKILL'))
+
+function stopServer() {
+  if (server.pid === undefined || server.killed) return
+  try {
+    process.kill(-server.pid, 'SIGKILL')
+  } catch {
+    server.kill('SIGKILL')
+  }
+}
+
+process.on('exit', stopServer)
+process.on('SIGINT', () => {
+  stopServer()
+  process.exit(130)
+})
 
 await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error('preview server timeout')), 30000)
@@ -373,6 +391,60 @@ check(
   (await outlineOf(page)).length === beforeTail + 1,
 )
 
+console.log('\nkeyboard bar: indent and outdent by tapping')
+await page.evaluate(() => document.activeElement?.blur())
+await page.waitForTimeout(200) // the blur is debounced, to survive re-renders
+check(
+  'the bar is hidden when nothing is focused',
+  !(await page.locator('.bar').isVisible()),
+)
+await clickRow(page, 'beta')
+check('the bar appears while editing', await page.locator('.bar').isVisible())
+const barOutdent = page.locator('.bar button[aria-label="Outdent"]')
+const barIndent = page.locator('.bar button[aria-label="Indent"]')
+
+const depthOf = async (text) => {
+  const row = (await outlineOf(page)).find((r) => r.trimStart() === text)
+  return row === undefined ? null : row.match(/^ */)[0].length / 2
+}
+const beforeIndent = await depthOf('beta')
+await barIndent.tap()
+await page.waitForTimeout(80)
+check(
+  'tapping indent nests the row',
+  (await depthOf('beta')) === beforeIndent + 1,
+  `${beforeIndent} -> ${await depthOf('beta')}`,
+)
+// The whole point of suppressing the default on pointerdown: losing focus here
+// would close the keyboard and unmount the bar after a single tap.
+check(
+  'the row keeps focus, so the keyboard stays up',
+  (await focusedRowText(page)) === 'beta',
+  `focus is on ${JSON.stringify(await focusedRowText(page))}`,
+)
+check(
+  'the bar is still there for a second tap',
+  await page.locator('.bar').isVisible(),
+)
+await barOutdent.tap()
+await page.waitForTimeout(80)
+check(
+  'tapping outdent moves it back',
+  (await depthOf('beta')) === beforeIndent,
+  `now ${await depthOf('beta')}`,
+)
+check(
+  'focus survives outdent too',
+  (await focusedRowText(page)) === 'beta',
+  `focus is on ${JSON.stringify(await focusedRowText(page))}`,
+)
+
+console.log('\nkeyboard bar: buttons reflect what is possible')
+await clickRow(page, 'Welcome')
+await page.waitForTimeout(80)
+check('outdent is disabled on a top-level row', await barOutdent.isDisabled())
+check('indent is disabled on the very first row', await barIndent.isDisabled())
+
 console.log('\npersistence across reload')
 const beforeReload = await outlineOf(page)
 await page.waitForTimeout(700) // let the debounced write land
@@ -382,5 +454,5 @@ equal('the document survives a reload', await outlineOf(page), beforeReload)
 
 console.log(`\n${checks - failures}/${checks} checks passed`)
 await browser.close()
-server.kill('SIGKILL')
+stopServer()
 process.exit(failures === 0 ? 0 : 1)
