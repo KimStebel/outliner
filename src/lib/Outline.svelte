@@ -1,10 +1,19 @@
 <script lang="ts">
   import { tick } from 'svelte'
   import Row from './Row.svelte'
+  import Dock from './Dock.svelte'
   import KeyboardBar from './KeyboardBar.svelte'
+  import Toast from './Toast.svelte'
+  import { viewport } from './viewport.svelte'
   import type { DocStore } from './store'
   import type { ItemId } from './model'
-  import { findItem, nextVisible, previousSibling, previousVisible } from './model'
+  import {
+    findItem,
+    nextVisible,
+    previousSibling,
+    previousVisible,
+    subtreeIds,
+  } from './model'
   import {
     caretOffsetIn,
     hasCollapsedSelection,
@@ -181,6 +190,18 @@
     }, 120)
   }
 
+  /**
+   * Touch devices are the ones lacking a Tab key. Also checking for an open
+   * keyboard means a device that reports a fine pointer still gets the bar
+   * rather than silently losing the only way to indent.
+   */
+  const coarsePointer =
+    typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+
+  const showKeyboardBar = $derived(
+    activeId !== null && (coarsePointer || viewport.keyboardHeight > 120),
+  )
+
   const canIndent = $derived.by(() => {
     if (activeId === null || findItem(store.doc, activeId) === undefined)
       return false
@@ -217,6 +238,77 @@
     // Deliberately no caret restore: tapping a bullet should not drag focus
     // back to whichever row was last edited, and so pop the keyboard open.
     onchange?.()
+  }
+
+  // ---------------------------------------------------------------------------
+  // Swipe to delete, and its undo
+  // ---------------------------------------------------------------------------
+
+  const UNDO_WINDOW_MS = 6000
+  const LABEL_LIMIT = 28
+
+  let toastMessage = $state<string | null>(null)
+  let toastTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * `refocus` is true only when the request came from the keyboard, where the
+   * user is demonstrably typing and expects the caret to carry on. A swipe is
+   * not an editing gesture: moving focus to a neighbouring row afterwards
+   * would pop the on-screen keyboard open over a list the user was only
+   * tidying.
+   */
+  function handleDelete(id: ItemId, refocus: boolean): void {
+    const label = store.textOf(id).trim()
+    const descendants = subtreeIds(store.doc, id).length - 1
+
+    store.remove(id)
+    // A swipe can misfire, and it takes a whole subtree with it, so the way
+    // back has to be visible — a phone has no Ctrl-Z.
+    toastMessage = describeDeletion(label, descendants)
+    restartToastTimer()
+
+    if (refocus) {
+      void afterEdit()
+    } else {
+      onchange?.()
+    }
+  }
+
+  function describeDeletion(label: string, descendants: number): string {
+    const name =
+      label === ''
+        ? 'empty item'
+        : `“${label.length > LABEL_LIMIT ? `${label.slice(0, LABEL_LIMIT)}…` : label}”`
+    if (descendants === 0) return `Deleted ${name}`
+    const plural = descendants === 1 ? 'item' : 'items'
+    return `Deleted ${name} and ${descendants} nested ${plural}`
+  }
+
+  function restartToastTimer(): void {
+    if (toastTimer !== null) clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => {
+      toastMessage = null
+      toastTimer = null
+    }, UNDO_WINDOW_MS)
+  }
+
+  function undoDeletion(): void {
+    // Same reasoning as the delete itself: only chase the caret if a row was
+    // already being edited.
+    const wasEditing = activeId !== null
+    store.undo()
+    dismissToast()
+    if (wasEditing) {
+      void afterEdit()
+    } else {
+      onchange?.()
+    }
+  }
+
+  function dismissToast(): void {
+    if (toastTimer !== null) clearTimeout(toastTimer)
+    toastTimer = null
+    toastMessage = null
   }
 
   /**
@@ -342,6 +434,13 @@
       void afterEdit()
       return
     }
+    if (event.shiftKey && (key === 'backspace' || key === 'delete')) {
+      // The keyboard counterpart of swipe-to-delete, so removing a subtree is
+      // not a touch-only capability.
+      event.preventDefault()
+      handleDelete(id, true)
+      return
+    }
     if (key === 'b' || key === 'i' || key === 'u') {
       // These would inject <b>/<i>/<u> in the `true` fallback mode.
       event.preventDefault()
@@ -377,17 +476,24 @@
       {plaintextOnly}
       {register}
       ontoggle={handleToggle}
+      ondelete={(id) => handleDelete(id, false)}
     />
   {/each}
 </div>
 
-<KeyboardBar
-  editing={activeId !== null}
-  {canIndent}
-  {canOutdent}
-  onindent={indentActive}
-  onoutdent={outdentActive}
-/>
+<Dock>
+  {#if toastMessage !== null}
+    <Toast message={toastMessage} onundo={undoDeletion} />
+  {/if}
+  {#if showKeyboardBar}
+    <KeyboardBar
+      {canIndent}
+      {canOutdent}
+      onindent={indentActive}
+      onoutdent={outdentActive}
+    />
+  {/if}
+</Dock>
 
 <style>
   .outline {

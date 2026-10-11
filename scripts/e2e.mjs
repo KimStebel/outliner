@@ -66,6 +66,58 @@ async function caretOffset(page) {
   })
 }
 
+/**
+ * Synthesise a touch swipe as pointer events. Playwright's touchscreen only
+ * taps, and the handlers key off `pointerType`, so drive them directly.
+ */
+async function swipe(page, rowText, dx, dy = 0, steps = 6) {
+  const row = page.locator('.swipe', { hasText: rowText }).first()
+  const box = await row.boundingBox()
+  const x0 = box.x + 20
+  const y0 = box.y + box.height / 2
+  const send = (type, x, y) =>
+    row.dispatchEvent(type, {
+      pointerId: 1,
+      pointerType: 'touch',
+      isPrimary: true,
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      cancelable: true,
+    })
+  await send('pointerdown', x0, y0)
+  for (let i = 1; i <= steps; i += 1) {
+    await send('pointermove', x0 + (dx * i) / steps, y0 + (dy * i) / steps)
+  }
+  await send('pointerup', x0 + dx, y0 + dy)
+  await page.waitForTimeout(80)
+}
+
+/** Swipe and pause at the far end so mid-gesture state can be inspected. */
+async function swipeAndHold(page, rowText, dx, inspect) {
+  const row = page.locator('.swipe', { hasText: rowText }).first()
+  const box = await row.boundingBox()
+  const x0 = box.x + 20
+  const y0 = box.y + box.height / 2
+  const send = (type, x, y) =>
+    row.dispatchEvent(type, {
+      pointerId: 2,
+      pointerType: 'touch',
+      isPrimary: true,
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      cancelable: true,
+    })
+  await send('pointerdown', x0, y0)
+  for (let i = 1; i <= 6; i += 1) await send('pointermove', x0 + (dx * i) / 6, y0)
+  await page.waitForTimeout(50)
+  const result = await inspect()
+  await send('pointerup', x0 + dx, y0)
+  await page.waitForTimeout(80)
+  return result
+}
+
 async function clickRow(page, text) {
   await page.locator('[data-item-id]', { hasText: text }).first().click()
 }
@@ -445,7 +497,95 @@ await page.waitForTimeout(80)
 check('outdent is disabled on a top-level row', await barOutdent.isDisabled())
 check('indent is disabled on the very first row', await barIndent.isDisabled())
 
+console.log('\nswipe right deletes a subtree')
+await page.evaluate(() => document.activeElement?.blur())
+await page.waitForTimeout(200)
+const beforeSwipe = await outlineOf(page)
+// A short drag is below the commit threshold and must leave the row alone.
+await swipe(page, 'Tab indents', 30)
+equal('a short swipe does not delete', await outlineOf(page), beforeSwipe)
+
+// A vertical drag is a scroll, not a swipe, however far it travels.
+await swipe(page, 'Tab indents', 10, 140)
+equal('a vertical drag does not delete', await outlineOf(page), beforeSwipe)
+
+// Mid-gesture the row must stay clipped; a row sliding past the edge gives
+// the whole page horizontal overflow.
+const overflow = await swipeAndHold(page, 'Tab indents', 260, async () =>
+  page.evaluate(() => ({
+    scrollW: document.documentElement.scrollWidth,
+    clientW: document.documentElement.clientWidth,
+  })),
+)
+check(
+  'the sliding row does not widen the page',
+  overflow.scrollW <= overflow.clientW,
+  `scrollWidth ${overflow.scrollW} vs clientWidth ${overflow.clientW}`,
+)
+
+const afterSwipe = await outlineOf(page)
+check(
+  'a full swipe removes the row',
+  !afterSwipe.some((r) => r.includes('Tab indents')),
+  JSON.stringify(afterSwipe),
+)
+check('the undo toast appears', await page.locator('.toast').isVisible())
+// Swiping is not an editing gesture; focusing a neighbour afterwards would
+// pop the on-screen keyboard open over a list the user was only tidying.
+check(
+  'the swipe does not focus a row',
+  await page.evaluate(() => !document.activeElement?.hasAttribute('data-item-id')),
+)
+check(
+  'and so the keyboard bar stays hidden',
+  !(await page.locator('.bar').isVisible()),
+)
+
+console.log('\nthe toast undoes the deletion')
+await page.locator('.toast button').click()
+await page.waitForTimeout(100)
+equal('undo restores the row', await outlineOf(page), beforeSwipe)
+check('the toast goes away', !(await page.locator('.toast').isVisible()))
+
+console.log('\nswiping a parent takes its children and says so')
+await swipe(page, 'Welcome', 260)
+const afterParent = await outlineOf(page)
+check(
+  'the whole subtree is gone',
+  !afterParent.some((r) => r.includes('Welcome') || r.includes('Return starts')),
+  JSON.stringify(afterParent),
+)
+const toastText = await page.locator('.toast .message').textContent()
+check(
+  'the toast reports how many nested items went with it',
+  /nested items/.test(toastText),
+  JSON.stringify(toastText),
+)
+await page.locator('.toast button').click()
+await page.waitForTimeout(100)
+check(
+  'undo brings the whole subtree back',
+  (await outlineOf(page)).length === beforeSwipe.length,
+)
+
+console.log('\nkeyboard delete is available too')
+// Target whatever the first row happens to be by now, rather than a label
+// earlier tests may have merged away.
+await page.locator('[data-item-id]').first().click()
+const beforeKeyDelete = (await outlineOf(page)).length
+await page.keyboard.press('Control+Shift+Backspace')
+await page.waitForTimeout(100)
+check(
+  'ctrl-shift-backspace deletes the subtree',
+  (await outlineOf(page)).length < beforeKeyDelete,
+)
+check('it shows the same undo toast', await page.locator('.toast').isVisible())
+await page.locator('.toast button').click()
+await page.waitForTimeout(100)
+check('and undoes cleanly', (await outlineOf(page)).length === beforeKeyDelete)
+
 console.log('\npersistence across reload')
+
 const beforeReload = await outlineOf(page)
 await page.waitForTimeout(700) // let the debounced write land
 await page.reload()

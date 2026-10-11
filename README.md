@@ -157,6 +157,15 @@ arrive.
   phone keyboard has no Tab key, so there is no other way to nest. It shows
   whenever a row is focused on a touch device, and its buttons disable
   themselves when the operation would be a no-op.
+- **Swipe a row right to delete it and its children**, with an undo toast for
+  six seconds. The gesture locks direction after 8px and only claims clearly
+  rightward travel, so vertical scrolling is untouched; it commits past 35% of
+  the row's width. Mouse drags are ignored, since inside a row those are text
+  selection. Ctrl/Cmd-Shift-Backspace does the same thing from a keyboard, so
+  deleting a subtree is not touch-only.
+- **Deleting by swipe does not move focus.** Focusing a neighbouring row would
+  pop the keyboard open over a list the user was only tidying. The keyboard
+  shortcut does keep the caret, because there the user is demonstrably typing.
 
 `contenteditable="plaintext-only"` is used where supported, but it is
 feature-detected rather than assumed: an unrecognised value maps to `inherit`,
@@ -169,7 +178,7 @@ own paste interception and suppression of the bold/italic/underline shortcuts.
 - [x] **1** Document model + ops + undo stack (headless, unit-tested)
 - [x] **2** List renderer, per-item `contenteditable`, Enter/Backspace/arrows
 - [x] **4** Toolbar pinned above the virtual keyboard (indent/outdent)
-- [ ] **3** Swipe-right to delete subtree, with undo toast
+- [x] **3** Swipe-right to delete subtree, with undo toast
 - [ ] **5** Collapse/expand and zoom-into-item with breadcrumb
 - [ ] **6** Perf pass on large lists; PWA manifest + offline
 - [ ] **7** Desktop: keyboard shortcuts, drag-reorder, wider layout
