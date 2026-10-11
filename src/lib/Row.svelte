@@ -172,9 +172,13 @@
         aria-expanded={!collapsed}
         aria-label={collapsed ? 'Expand' : 'Collapse'}
         tabindex="-1"
-      ></button>
+      >
+        <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
     {:else}
-      <span class="bullet" aria-hidden="true"></span>
+      <span class="bullet leaf" aria-hidden="true"></span>
     {/if}
 
     <div
@@ -254,26 +258,27 @@
     will-change: transform;
   }
 
-  /* The bullet occupies exactly the dot's size in layout, so parents and
-     leaves at the same depth align. The dot itself and the tap target are
-     drawn by pseudo-elements, which take part in hit testing without
-     affecting the row's geometry. */
+  /* One fixed-size slot whatever it holds, so a parent's text and a leaf's
+     text at the same depth start at the same x. Its height is one line box,
+     which centres the glyph on the row's first line without magic offsets. */
   .bullet {
     flex: none;
     position: relative;
-    width: 7px;
-    height: 7px;
-    /* Centre the dot on the first line of text. */
-    margin-top: calc((1.45em - 7px) / 2);
+    display: grid;
+    place-items: center;
+    width: 14px;
+    height: 1.45em;
     padding: 0;
     border: 0;
     background: none;
   }
 
-  .bullet::before {
+  /* A leaf has nothing to fold, so it keeps a plain dot — a chevron there
+     would advertise an action that does not exist. */
+  .leaf::before {
     content: '';
-    position: absolute;
-    inset: 0;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--bullet);
   }
@@ -283,7 +288,7 @@
   }
 
   .bullet.interactive::after {
-    /* A 34px tap target centred on a 7px dot. Absolutely positioned so it
+    /* A 34px tap target centred on the glyph. Absolutely positioned so it
        cannot push the text out of alignment. */
     content: '';
     position: absolute;
@@ -294,10 +299,27 @@
     transform: translate(-50%, -50%);
   }
 
-  .bullet.interactive.collapsed::before {
-    /* A ring marks hidden children, so a folded row is not silently
-       indistinguishable from a leaf. */
-    box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--bullet) 30%, transparent);
+  .chevron {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    /* Darker than a leaf's dot: this one is a control, not decoration. */
+    stroke: var(--fg-dim);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    /* Points right when folded; rotating to point down is the open state. */
+    transition: transform 150ms ease;
+  }
+
+  .bullet:not(.collapsed) .chevron {
+    transform: rotate(90deg);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chevron {
+      transition: none;
+    }
   }
 
   .text {

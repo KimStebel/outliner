@@ -299,6 +299,56 @@ check(
 await page.locator('.row', { hasText: 'Welcome' }).first().locator('button').click()
 check('unfolding restores them', (await outlineOf(page)).length === beforeCollapse)
 
+console.log('\nthe bullet shows the fold state')
+const chevron = page
+  .locator('.row', { hasText: 'Welcome' })
+  .first()
+  .locator('.chevron')
+const bullet = page
+  .locator('.row', { hasText: 'Welcome' })
+  .first()
+  .locator('button')
+const rotationOf = async () => {
+  // Settle first: sampling mid-transition reads an intermediate angle.
+  await page.waitForTimeout(250)
+  return chevron.evaluate((el) => getComputedStyle(el).transform)
+}
+// Rotated a quarter turn: the chevron points down while the row is open.
+const OPEN = 'matrix(0, 1, -1, 0, 0, 0)'
+
+check(
+  'expanded rows report themselves expanded',
+  (await bullet.getAttribute('aria-expanded')) === 'true',
+)
+const openRotation = await rotationOf()
+check('the open chevron points down', openRotation === OPEN, openRotation)
+
+await bullet.click()
+const foldedRotation = await rotationOf()
+check(
+  'folded rows report themselves collapsed',
+  (await bullet.getAttribute('aria-expanded')) === 'false',
+)
+check(
+  'the folded chevron points right',
+  foldedRotation === 'none' || foldedRotation === 'matrix(1, 0, 0, 1, 0, 0)',
+  foldedRotation,
+)
+
+await bullet.click()
+const reopened = await rotationOf()
+check('unfolding turns it back down', reopened === OPEN, reopened)
+
+// A leaf has nothing to fold, so it must not offer a chevron.
+check(
+  'leaves keep a plain dot',
+  (await page
+    .locator('.row', { hasText: 'Return starts a new item' })
+    .first()
+    .locator('.chevron')
+    .count()) === 0,
+)
+
 console.log('\nmulti-line paste becomes multiple rows')
 await clickRow(page, 'Then add your own below')
 await page.keyboard.press('End')

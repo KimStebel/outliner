@@ -153,6 +153,12 @@ arrive.
   `text/plain`.
 - **Tapping below the list** appends a sibling of the last row — the same thing
   pressing Enter there would do.
+- **Tap a bullet to fold or unfold** its children. A parent's bullet is a
+  chevron — pointing down when open, right when folded — so the state is
+  readable at a glance; a leaf keeps a plain dot, since a chevron there would
+  advertise an action that does not exist. The bullet occupies a fixed-width
+  slot either way, so a parent's text and a leaf's text at the same depth
+  still start at the same x.
 - **Indent and outdent on mobile** come from a bar docked above the keyboard; a
   phone keyboard has no Tab key, so there is no other way to nest. It shows
   whenever a row is focused on a touch device, and its buttons disable
