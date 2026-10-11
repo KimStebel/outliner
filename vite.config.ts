@@ -18,6 +18,15 @@ export default defineConfig({
     // protection, so keep it to trusted networks — it is a dev-only setting and
     // does not affect `build` or `preview`.
     allowedHosts: true,
+    watch: {
+      // This project lives on a 9p share from the VM host, and 9p does not
+      // deliver inotify events to the guest. Without polling the watcher never
+      // fires: no HMR, and even a hard reload serves the cached transform of a
+      // file that changed on disk. Vite already excludes node_modules from the
+      // watch set, so this only polls source.
+      usePolling: true,
+      interval: 300,
+    },
   },
   test: {
     include: ['src/**/*.test.ts'],
