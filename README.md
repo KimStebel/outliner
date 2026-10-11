@@ -55,10 +55,52 @@ inverse, feeding an app-level undo stack. This is load-bearing rather than
 optional polish: per-item `contenteditable` means the browser's native undo does
 not span structural edits, and a mis-triggered swipe deletes a whole subtree.
 
+**Journalled inverses, not hand-written ones.** Rather than writing an undo for
+each op, every op runs inside a `Tx` (`tx.ts`) that snapshots the _before_ image
+of each record it touches. The inverse of any op — however many records it
+rewrites — is then just "put these records back". Flat records keep each journal
+entry small enough to produce on every keystroke.
+
+**Total ops.** An operation that cannot apply (outdent at the top level, indent
+of a first child) is a no-op returning `null` rather than an error, so the UI can
+bind keys without pre-checking. No-ops record no history and, importantly, leave
+the redo stack intact.
+
+### Layout
+
+| File            | Role                                                        |
+| --------------- | ----------------------------------------------------------- |
+| `model.ts`      | Types, plus pure tree/visible-order queries. No mutation.   |
+| `tx.ts`         | Change journalling, revert/reapply, coalescing of changes.  |
+| `ops.ts`        | Editing semantics. Takes a `Tx`, returns a caret or `null`. |
+| `store.ts`      | `DocStore`: owns doc, caret, and undo/redo stacks.          |
+| `persist.ts`    | Versioned envelope and a validating loader.                 |
+| `storage.ts`    | Debounced, typed `Storage` wrapper.                         |
+| `test-utils.ts` | Outline notation (`a` / `  b` / `> collapsed`) for tests.   |
+
+Nothing below `store.ts` imports Svelte, so the whole core is testable in plain
+Node. Phase 2 wraps the `Doc` in `$state`; because ops mutate records in place,
+Svelte's deep proxy will invalidate only the affected row.
+
+### Editing semantics worth knowing
+
+- **Enter** splits at the caret. At offset 0 of a non-empty item it pushes the
+  line down (empty sibling above, caret stays). On an item with _visible_
+  children the tail becomes the new first child, since the children belong to
+  the head.
+- **Shift-Tab** adopts any following siblings as children. Without that, outdent
+  would silently reorder the document on screen.
+- **Backspace at offset 0** merges into the previous _visible_ row, but is
+  refused when the item has children — quietly reparenting a subtree is a good
+  way to lose work.
+- **Typing coalesces** into one undo step per item within a 600 ms window, so
+  undo is not per-character. A structural edit or a caret move breaks the step.
+- The document is never left empty; deleting the last item creates a fresh one.
+
 ## Roadmap
 
 - [x] **0** Toolchain, scaffold, base styles, debounced persistence helper
-- [ ] **1** Document model + ops + undo stack (headless, unit-tested)
+- [x] **1** Document model + ops + undo stack (headless, unit-tested)
 - [ ] **2** List renderer, per-item `contenteditable`, Enter/Backspace/arrows
 - [ ] **3** Swipe-right to delete subtree, with undo toast
 - [ ] **4** Toolbar pinned above the virtual keyboard (indent/outdent/collapse)

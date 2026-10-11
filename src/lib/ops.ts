@@ -1,0 +1,335 @@
+/**
+ * Editing operations.
+ *
+ * Every op takes a {@link Tx} (which journals its inverse) and returns the
+ * caret position the renderer should move to, or `null` to mean "leave the
+ * caret where it is". Ops never touch the DOM and never decide what is
+ * focused — they only describe intent.
+ *
+ * Ops are total: an operation that cannot apply (outdenting a top-level item,
+ * indenting a first child) is a no-op returning `null`, rather than an error.
+ * The UI can then bind keys unconditionally without pre-checking.
+ */
+
+import type { Caret, Doc, ItemId } from './model'
+import {
+  createItem,
+  getItem,
+  previousVisible,
+  nextVisible,
+  subtreeIds,
+} from './model'
+import type { Tx } from './tx'
+
+export interface OpContext {
+  newId: () => ItemId
+}
+
+/** Replace an item's text. The caller owns the caret, since it knows the DOM selection. */
+export function setText(tx: Tx, id: ItemId, text: string): null {
+  tx.update(id, (item) => {
+    item.text = text
+  })
+  return null
+}
+
+export function setCollapsed(tx: Tx, id: ItemId, collapsed: boolean): null {
+  const item = tx.get(id)
+  // Collapsing a leaf would hide nothing and leaves a confusing twisty state.
+  if (item.children.length === 0) return null
+  tx.update(id, (target) => {
+    target.collapsed = collapsed
+  })
+  return null
+}
+
+export function toggleCollapsed(tx: Tx, id: ItemId): null {
+  return setCollapsed(tx, id, !tx.get(id).collapsed)
+}
+
+/**
+ * Enter. Splits `id` at `offset`.
+ *
+ * Three cases, matching what outliners do and what the caret makes you expect:
+ *
+ * - At offset 0 of a non-empty item, push the current line down: a new empty
+ *   sibling goes *above*, and the caret stays put. Moving all the text into a
+ *   new record instead would make the caret appear to jump.
+ * - If the item has visible children, the tail becomes the new *first child* —
+ *   the children belong to the head, so a sibling would detach them.
+ * - Otherwise the tail becomes the next sibling.
+ */
+export function splitItem(
+  tx: Tx,
+  ctx: OpContext,
+  id: ItemId,
+  offset: number,
+): Caret {
+  const item = tx.get(id)
+  const clamped = Math.max(0, Math.min(offset, item.text.length))
+  const head = item.text.slice(0, clamped)
+  const tail = item.text.slice(clamped)
+
+  if (clamped === 0 && item.text.length > 0) {
+    const sibling = createItem(ctx.newId(), item.parent, '')
+    insertSiblingAt(tx, sibling, id, 'before')
+    return { id, offset: 0 }
+  }
+
+  tx.update(id, (target) => {
+    target.text = head
+  })
+
+  const hasVisibleChildren = item.children.length > 0 && !item.collapsed
+  if (hasVisibleChildren) {
+    const child = createItem(ctx.newId(), id, tail)
+    tx.insert(child)
+    tx.update(id, (target) => {
+      target.children.unshift(child.id)
+    })
+    return { id: child.id, offset: 0 }
+  }
+
+  const sibling = createItem(ctx.newId(), item.parent, tail)
+  insertSiblingAt(tx, sibling, id, 'after')
+  return { id: sibling.id, offset: 0 }
+}
+
+/** Insert an empty sibling directly after `id`, regardless of children. */
+export function insertAfter(tx: Tx, ctx: OpContext, id: ItemId): Caret {
+  const item = tx.get(id)
+  const sibling = createItem(ctx.newId(), item.parent, '')
+  insertSiblingAt(tx, sibling, id, 'after')
+  return { id: sibling.id, offset: 0 }
+}
+
+function insertSiblingAt(
+  tx: Tx,
+  sibling: ReturnType<typeof createItem>,
+  relativeTo: ItemId,
+  side: 'before' | 'after',
+): void {
+  const parentId = tx.get(relativeTo).parent
+  if (parentId === null) throw new Error('Cannot add a sibling to the root')
+  sibling.parent = parentId
+  tx.insert(sibling)
+  tx.update(parentId, (parent) => {
+    const index = parent.children.indexOf(relativeTo)
+    parent.children.splice(side === 'after' ? index + 1 : index, 0, sibling.id)
+  })
+}
+
+/**
+ * Tab. Makes `id` the last child of its previous sibling.
+ *
+ * No-op for a first child, which has nothing to nest under. If the new parent
+ * was collapsed it is expanded, so the item does not vanish as you indent it.
+ */
+export function indentItem(tx: Tx, id: ItemId): null {
+  const item = tx.get(id)
+  if (item.parent === null) return null
+
+  const parent = tx.get(item.parent)
+  const index = parent.children.indexOf(id)
+  const newParentId = index > 0 ? parent.children[index - 1] : undefined
+  if (newParentId === undefined) return null
+
+  tx.update(parent.id, (target) => {
+    target.children.splice(target.children.indexOf(id), 1)
+  })
+  tx.update(newParentId, (target) => {
+    target.children.push(id)
+    target.collapsed = false
+  })
+  tx.update(id, (target) => {
+    target.parent = newParentId
+  })
+  return null
+}
+
+/**
+ * Shift-Tab. Makes `id` the next sibling of its parent.
+ *
+ * Any siblings that followed `id` are adopted as its children. Without that,
+ * they would end up rendered *above* the outdented item despite having come
+ * after it — outdent would silently reorder the document.
+ *
+ * No-op at depth 0, where there is no shallower level to move to.
+ */
+export function outdentItem(tx: Tx, id: ItemId): null {
+  const item = tx.get(id)
+  if (item.parent === null) return null
+
+  const parent = tx.get(item.parent)
+  if (parent.parent === null) return null // already top level
+
+  const grandparentId = parent.parent
+  const index = parent.children.indexOf(id)
+  const followingSiblings = parent.children.slice(index + 1)
+
+  tx.update(parent.id, (target) => {
+    target.children.splice(index)
+  })
+
+  for (const siblingId of followingSiblings) {
+    tx.update(siblingId, (sibling) => {
+      sibling.parent = id
+    })
+  }
+  if (followingSiblings.length > 0) {
+    tx.update(id, (target) => {
+      target.children.push(...followingSiblings)
+      // Adopted children must not land inside a collapsed node, or they vanish.
+      target.collapsed = false
+    })
+  }
+
+  tx.update(id, (target) => {
+    target.parent = grandparentId
+  })
+  tx.update(grandparentId, (target) => {
+    target.children.splice(target.children.indexOf(parent.id) + 1, 0, id)
+  })
+  return null
+}
+
+/**
+ * Delete an item and everything under it — the swipe-right gesture.
+ *
+ * Returns the caret for the row that takes its place: the preceding visible
+ * row, else the following one. The document is never left empty; see
+ * {@link ensureNonEmpty}.
+ */
+export function removeSubtree(tx: Tx, ctx: OpContext, id: ItemId): Caret | null {
+  const item = tx.get(id)
+  if (item.parent === null) return null
+
+  // Resolve the caret target before the subtree stops existing.
+  const fallbackId = previousVisible(tx.doc, id) ?? nextVisible(tx.doc, id)
+  const fallback =
+    fallbackId !== undefined && !subtreeIds(tx.doc, id).includes(fallbackId)
+      ? fallbackId
+      : undefined
+
+  const doomed = subtreeIds(tx.doc, id)
+  const parentId = item.parent
+
+  tx.update(parentId, (parent) => {
+    parent.children.splice(parent.children.indexOf(id), 1)
+  })
+  for (const doomedId of doomed) {
+    tx.remove(doomedId)
+  }
+
+  if (fallback !== undefined) {
+    return { id: fallback, offset: getItem(tx.doc, fallback).text.length }
+  }
+  return ensureNonEmpty(tx, ctx)
+}
+
+/**
+ * Backspace at offset 0. Appends this item's text to the preceding visible row
+ * and deletes it.
+ *
+ * Refused when the item has children: there is no non-surprising place to put
+ * them, and silently reparenting a subtree on a Backspace would be a great way
+ * to lose work. The UI should offer outdent instead.
+ */
+export function mergeWithPrevious(tx: Tx, id: ItemId): Caret | null {
+  const item = tx.get(id)
+  if (item.parent === null) return null
+  if (item.children.length > 0) return null
+
+  const previousId = previousVisible(tx.doc, id)
+  if (previousId === undefined) return null
+
+  const previous = tx.get(previousId)
+  const joinOffset = previous.text.length
+  const carriedText = item.text
+
+  tx.update(item.parent, (parent) => {
+    parent.children.splice(parent.children.indexOf(id), 1)
+  })
+  tx.remove(id)
+  if (carriedText.length > 0) {
+    tx.update(previousId, (target) => {
+      target.text += carriedText
+    })
+  }
+  return { id: previousId, offset: joinOffset }
+}
+
+/**
+ * Guarantee at least one item exists, so there is always a row to type into.
+ * Returns the caret for a freshly created item, or `null` if none was needed.
+ */
+export function ensureNonEmpty(tx: Tx, ctx: OpContext): Caret | null {
+  const root = tx.get(tx.doc.rootId)
+  if (root.children.length > 0) return null
+
+  const item = createItem(ctx.newId(), root.id, '')
+  tx.insert(item)
+  tx.update(root.id, (target) => {
+    target.children.push(item.id)
+  })
+  return { id: item.id, offset: 0 }
+}
+
+/**
+ * Structural self-check, used by the persistence validator and by tests.
+ * Returns the problems found; an empty array means the document is sound.
+ */
+export function validateDoc(doc: Doc): string[] {
+  const problems: string[] = []
+  const root = doc.items[doc.rootId]
+  if (root === undefined) {
+    return [`Missing root item: ${doc.rootId}`]
+  }
+  if (root.parent !== null) problems.push('Root must have a null parent')
+
+  for (const [id, item] of Object.entries(doc.items)) {
+    if (item.id !== id) problems.push(`Key ${id} does not match item id ${item.id}`)
+    if (new Set(item.children).size !== item.children.length) {
+      problems.push(`Item ${id} lists a duplicate child`)
+    }
+    for (const childId of item.children) {
+      const child = doc.items[childId]
+      if (child === undefined) {
+        problems.push(`Item ${id} references missing child ${childId}`)
+      } else if (child.parent !== id) {
+        problems.push(`Child ${childId} does not point back to parent ${id}`)
+      }
+    }
+    if (item.parent !== null) {
+      const parent = doc.items[item.parent]
+      if (parent === undefined) {
+        problems.push(`Item ${id} references missing parent ${item.parent}`)
+      } else if (!parent.children.includes(id)) {
+        problems.push(`Parent ${item.parent} does not list child ${id}`)
+      }
+    }
+  }
+
+  // Every item must be reachable from the root: catches cycles and orphans,
+  // which the pairwise checks above cannot see.
+  const reachable = new Set(subtreeIdsSafe(doc, doc.rootId))
+  for (const id of Object.keys(doc.items)) {
+    if (!reachable.has(id)) problems.push(`Item ${id} is unreachable from the root`)
+  }
+  return problems
+}
+
+/** Like `subtreeIds`, but cycle- and dangling-reference-tolerant. */
+function subtreeIdsSafe(doc: Doc, from: ItemId): ItemId[] {
+  const seen = new Set<ItemId>()
+  const stack = [from]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (current === undefined || seen.has(current)) continue
+    seen.add(current)
+    const item = doc.items[current]
+    if (item === undefined) continue
+    for (const child of item.children) stack.push(child)
+  }
+  return [...seen]
+}
