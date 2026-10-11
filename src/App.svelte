@@ -6,6 +6,8 @@
   import { welcomeDoc } from './lib/welcome'
   import { randomId } from './lib/id'
   import ImportDialog from './lib/ImportDialog.svelte'
+  import Breadcrumb from './lib/Breadcrumb.svelte'
+  import type { ItemId } from './lib/model'
 
   const storage = createDocStorage({
     backend: createBrowserStorage(),
@@ -53,6 +55,21 @@
 
   let importing = $state(false)
 
+  /**
+   * The item the outline is rooted at, or null for the whole document.
+   *
+   * Deliberately not persisted: a stored zoom could point at an item deleted
+   * in another tab, and opening to an unexpected subtree is more disorienting
+   * than always starting at the top.
+   */
+  let zoomId = $state<ItemId | null>(null)
+
+  /** Drop the zoom if whatever it pointed at is gone. */
+  const zoomedInto = $derived.by(() => {
+    void revision
+    return zoomId !== null && store.exists(zoomId) ? zoomId : null
+  })
+
   function handleImport(markdown: string): void {
     store.importMarkdown(markdown)
     importing = false
@@ -91,15 +108,17 @@
       aria-label={allFolded ? 'Expand all' : 'Collapse all'}
       title={allFolded ? 'Expand all' : 'Collapse all'}
     >
+      <!-- Shallow, well-separated chevrons: steeper ones meet in the middle
+           and read as a close cross rather than fold/unfold. -->
       {#if allFolded}
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M7 10l5-5 5 5" />
-          <path d="M7 14l5 5 5-5" />
+          <path d="M5 9l7-4 7 4" />
+          <path d="M5 15l7 4 7-4" />
         </svg>
       {:else}
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M7 4l5 5 5-5" />
-          <path d="M7 20l5-5 5 5" />
+          <path d="M5 5l7 4 7-4" />
+          <path d="M5 19l7-4 7 4" />
         </svg>
       {/if}
     </button>
@@ -113,13 +132,22 @@
   </div>
 </header>
 
+{#if zoomedInto !== null}
+  <Breadcrumb {store} zoomId={zoomedInto} onnavigate={(id) => (zoomId = id)} />
+{/if}
+
 <ImportDialog
   open={importing}
   onimport={handleImport}
   onclose={() => (importing = false)}
 />
 
-<Outline {store} onchange={handleChange} />
+<Outline
+  {store}
+  zoomId={zoomedInto}
+  onzoom={(id) => (zoomId = id)}
+  onchange={handleChange}
+/>
 
 <style>
   header {

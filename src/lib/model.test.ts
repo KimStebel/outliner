@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ancestorsOf,
   createDoc,
   depthOf,
   getItem,
@@ -174,5 +175,25 @@ describe('visible-order navigation', () => {
     expect(lastVisibleInSubtree(collapsed, idOf(collapsed, 'a'))).toBe(
       idOf(collapsed, 'a'),
     )
+  })
+})
+
+describe('ancestorsOf', () => {
+  const doc = docFromOutline(SAMPLE)
+
+  it('lists the path from the root down to the parent', () => {
+    expect(ancestorsOf(doc, idOf(doc, 'c'))).toEqual([
+      doc.rootId,
+      idOf(doc, 'a'),
+      idOf(doc, 'b'),
+    ])
+  })
+
+  it('is just the root for a top-level item', () => {
+    expect(ancestorsOf(doc, idOf(doc, 'a'))).toEqual([doc.rootId])
+  })
+
+  it('is empty for the root itself', () => {
+    expect(ancestorsOf(doc, doc.rootId)).toEqual([])
   })
 })

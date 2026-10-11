@@ -130,6 +130,10 @@ export class DocStore {
     )
   }
 
+  appendChild(parentId: ItemId): void {
+    this.transact('insert', (tx) => ops.appendChild(tx, this.ctx, parentId))
+  }
+
   insertAfter(id: ItemId): void {
     this.transact('insert', (tx) => ops.insertAfter(tx, this.ctx, id))
   }

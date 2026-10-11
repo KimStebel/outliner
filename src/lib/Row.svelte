@@ -13,6 +13,7 @@
     plaintextOnly: boolean
     register: (id: ItemId, el: HTMLElement | null) => void
     ontoggle: (id: ItemId) => void
+    onzoom: (id: ItemId) => void
     ondelete: (id: ItemId) => void
     /** A drag is beginning. The parent owns everything from here. */
     ondragstart: (id: ItemId, start: DragStart) => void
@@ -31,6 +32,7 @@
     plaintextOnly,
     register,
     ontoggle,
+    onzoom,
     ondelete,
     ondragstart,
     dragging,
@@ -122,8 +124,8 @@
     // Mouse drags inside a row are text selection, so leave them alone; swipe
     // is a touch gesture. Desktop deletes rows by other means.
     if (event.pointerType === 'mouse') return
-    // The bullet starts a drag directly and must not also arm a swipe.
-    if (event.target instanceof Element && event.target.closest('.bullet')) return
+    // The gutter controls start a drag directly and must not also arm a swipe.
+    if (event.target instanceof Element && event.target.closest('.gutter')) return
     // Dragging a selection handle also produces pointer events here.
     const selection = window.getSelection()
     if (selection !== null && !selection.isCollapsed) return
@@ -137,7 +139,7 @@
 
     // While a row is focused, a hold means "select this text" — overriding it
     // would take away the only way to select inside a row being edited. The
-    // bullet still works for dragging in that case.
+    // gutter controls still work for dragging in that case.
     if (focused) return
 
     const start = {
@@ -210,7 +212,7 @@
     release()
   }
 
-  /** The bullet waits for travel, so a plain click still folds the row. */
+  /** Gutter controls wait for travel, so a plain click still acts. */
   function fromEvent(event: PointerEvent): DragStart {
     return {
       pointerId: event.pointerId,
@@ -256,30 +258,38 @@
     class:dragging
     style="--depth: {depth}; transform: translateX({offset}px)"
   >
-    {#if hasChildren}
+    <span class="gutter">
+      {#if hasChildren}
+        <button
+          class="fold"
+          class:collapsed
+          onclick={() => ontoggle(id)}
+          onpointerdown={(event) => ondragstart(id, fromEvent(event))}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? 'Expand' : 'Collapse'}
+          tabindex="-1"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+      {:else}
+        <span class="fold" aria-hidden="true"></span>
+      {/if}
+
+      <!-- The dot zooms in, the chevron folds. Separating them is what lets a
+           row be both foldable and drillable without one tap meaning two
+           different things. -->
       <button
-        class="bullet interactive"
+        class="dot"
         class:collapsed
-        onclick={() => ontoggle(id)}
+        onclick={() => onzoom(id)}
         onpointerdown={(event) => ondragstart(id, fromEvent(event))}
-        aria-expanded={!collapsed}
-        aria-label={collapsed ? 'Expand' : 'Collapse'}
+        aria-label="Zoom in"
+        title="Zoom in"
         tabindex="-1"
-      >
-        <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M9 5l7 7-7 7" />
-        </svg>
-      </button>
-    {:else}
-      <!-- A leaf's dot is a drag handle too, even though it has nothing to
-           fold. It is not focusable and carries no action of its own. -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <span
-        class="bullet leaf"
-        aria-hidden="true"
-        onpointerdown={(event) => ondragstart(id, fromEvent(event))}
-      ></span>
-    {/if}
+      ></button>
+    </span>
 
     <div
       bind:this={el}
@@ -364,56 +374,54 @@
     opacity: 0.4;
   }
 
-  /* One fixed-size slot whatever it holds, so a parent's text and a leaf's
-     text at the same depth start at the same x. Its height is one line box,
-     which centres the glyph on the row's first line without magic offsets. */
-  .bullet {
+  /* Two fixed-width slots, so text starts at the same x whether or not the
+     row has children. Both are drag handles. */
+  .gutter {
     flex: none;
-    position: relative;
-    /* The handle owns its gestures outright: panning from here is a drag, so
-       the browser must not also scroll the list. */
+    display: flex;
+    align-items: flex-start;
+    /* These own their gestures outright: panning from here is a drag, so the
+       browser must not also scroll the list. */
     touch-action: none;
-    cursor: grab;
+  }
+
+  .fold,
+  .dot {
+    position: relative;
     display: grid;
     place-items: center;
-    width: 14px;
+    width: 16px;
+    /* One line box tall, which centres the glyph on the row's first line
+       without magic offsets. */
     height: 1.45em;
     padding: 0;
     border: 0;
     background: none;
   }
 
-  /* A leaf has nothing to fold, so it keeps a plain dot — a chevron there
-     would advertise an action that does not exist. */
-  .leaf::before {
-    content: '';
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--bullet);
-  }
-
-  .bullet.interactive {
+  button.fold,
+  .dot {
     cursor: pointer;
   }
 
-  .bullet.interactive::after {
-    /* A 34px tap target centred on the glyph. Absolutely positioned so it
-       cannot push the text out of alignment. */
+  /* A taller hit area than the glyph, without disturbing the row's geometry.
+     Kept to the slot's own width so the two controls cannot overlap. */
+  button.fold::after,
+  .dot::after {
     content: '';
     position: absolute;
-    left: 50%;
+    left: 0;
+    right: 0;
     top: 50%;
-    width: 34px;
     height: 34px;
-    transform: translate(-50%, -50%);
+    transform: translateY(-50%);
   }
 
-  .chevron {
+  .fold svg {
     width: 13px;
     height: 13px;
     fill: none;
-    /* Darker than a leaf's dot: this one is a control, not decoration. */
+    /* Darker than the dot: this one is a control, not decoration. */
     stroke: var(--fg-dim);
     stroke-width: 2.5;
     stroke-linecap: round;
@@ -422,12 +430,26 @@
     transition: transform 150ms ease;
   }
 
-  .bullet:not(.collapsed) .chevron {
+  .fold:not(.collapsed) svg {
     transform: rotate(90deg);
   }
 
+  .dot::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--bullet);
+  }
+
+  .dot.collapsed::before {
+    /* A halo marks hidden children, readable when scanning a long list even
+       though the chevron already says so. */
+    box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--bullet) 30%, transparent);
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .chevron {
+    .fold svg {
       transition: none;
     }
   }

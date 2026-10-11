@@ -179,6 +179,15 @@ arrive.
   and `[label](url)` stay as written — the URL inside the latter is still
   clickable. Task markers `[ ]` / `[x]` are kept as text, since there is no
   done state to map them onto yet.
+- **Tap a row's dot to zoom into it**: the view re-roots on that item, its
+  children render at depth 0, and a breadcrumb trails back out. Escape zooms
+  out one level. The fold chevron and the zoom dot are deliberately separate
+  controls — one tap cannot mean two things, and both double as drag handles.
+  While zoomed, navigation, Backspace-merge and outdent all stop at the zoom
+  boundary rather than quietly acting on rows that are off screen.
+  The zoom is not persisted: a stored zoom could point at an item deleted
+  elsewhere, and opening into an unexpected subtree is worse than starting at
+  the top. The zoomed item's title is read-only; zoom out one level to edit it.
 - **Collapse all** in the header folds every parent at once, and turns into
   expand-all once everything is folded — a collapse-only button would leave no
   way back but opening each row by hand. It is one undo step, and records
@@ -222,6 +231,6 @@ own paste interception and suppression of the bold/italic/underline shortcuts.
 - [x] **3** Swipe-right to delete subtree (undo via header / Ctrl-Z)
 - [x] **5a** Collapse/expand with a chevron bullet
 - [x] Drag and drop to move and re-nest; links; markdown import
-- [ ] **5b** Zoom into an item, with a breadcrumb
+- [x] **5b** Zoom into an item, with a breadcrumb
 - [ ] **6** Perf pass on large lists; PWA manifest + offline
 - [ ] **7** Desktop: keyboard shortcuts, drag-reorder, wider layout

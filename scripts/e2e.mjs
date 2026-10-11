@@ -123,10 +123,7 @@ async function swipeAndHold(page, rowText, dx, inspect) {
  * threshold and the handle's touch-action all take part.
  */
 async function dragRow(page, rowText, { dy = 0, dx = 0 }) {
-  const handle = page
-    .locator('.row', { hasText: rowText })
-    .first()
-    .locator('.bullet')
+  const handle = page.locator('.row', { hasText: rowText }).first().locator('.dot')
   const box = await handle.boundingBox()
   const x = box.x + box.width / 2
   const y = box.y + box.height / 2
@@ -365,25 +362,22 @@ check(
 
 console.log('\ncollapse hides children')
 const beforeCollapse = (await outlineOf(page)).length
-await page.locator('.row', { hasText: 'Welcome' }).first().locator('button').click()
+await page.locator('.row', { hasText: 'Welcome' }).first().locator('.fold').click()
 const afterCollapse = (await outlineOf(page)).length
 check(
   'folding Welcome hides its four children',
   beforeCollapse - afterCollapse === 4,
   `${beforeCollapse} -> ${afterCollapse}`,
 )
-await page.locator('.row', { hasText: 'Welcome' }).first().locator('button').click()
+await page.locator('.row', { hasText: 'Welcome' }).first().locator('.fold').click()
 check('unfolding restores them', (await outlineOf(page)).length === beforeCollapse)
 
 console.log('\nthe bullet shows the fold state')
 const chevron = page
   .locator('.row', { hasText: 'Welcome' })
   .first()
-  .locator('.chevron')
-const bullet = page
-  .locator('.row', { hasText: 'Welcome' })
-  .first()
-  .locator('button')
+  .locator('.fold svg')
+const bullet = page.locator('.row', { hasText: 'Welcome' }).first().locator('.fold')
 const rotationOf = async () => {
   // Settle first: sampling mid-transition reads an intermediate angle.
   await page.waitForTimeout(250)
@@ -1067,7 +1061,7 @@ check(
   (await page
     .locator('.row', { hasText: 'Try it' })
     .first()
-    .locator('.bullet')
+    .locator('.dot')
     .count()) === 1,
 )
 
@@ -1086,6 +1080,123 @@ await swipe(page, 'Tab indents', 260)
 check(
   'a quick swipe still deletes',
   !(await outlineOf(page)).some((row) => row.includes('Tab indents')),
+)
+
+console.log('\nzoom into an item')
+await resetDocument(page)
+const zoomDot = (text) =>
+  page.locator('.row', { hasText: text }).first().locator('.dot')
+await zoomDot('Welcome').click()
+await page.waitForTimeout(150)
+equal("only the item's children are listed", await outlineOf(page), [
+  'Return starts a new item',
+  'Tab indents, Shift-Tab outdents',
+  'Backspace at the start joins to the item above',
+  'Tap a bullet with children to fold it',
+])
+check(
+  'the zoomed item becomes the title',
+  (await page.locator('nav h2').textContent()) === 'Welcome',
+)
+check(
+  'a breadcrumb back to everything is offered',
+  await page.locator('nav button', { hasText: 'All items' }).isVisible(),
+)
+
+console.log('\nchildren are rendered at the top level of the zoomed view')
+const depthZero = await page.$$eval('.row', (nodes) =>
+  nodes.map((n) =>
+    Number(getComputedStyle(n).getPropertyValue('--depth').trim() || '0'),
+  ),
+)
+check(
+  'their depth restarts at zero',
+  depthZero.every((d) => d === 0),
+  JSON.stringify(depthZero),
+)
+
+console.log('\nediting inside a zoom stays inside it')
+await clickRow(page, 'Return starts a new item')
+await page.keyboard.press('Home')
+await page.keyboard.press('ArrowUp')
+check(
+  'arrow up does not escape to the parent',
+  (await focusedRowText(page)) === 'Return starts a new item',
+  `focus on ${JSON.stringify(await focusedRowText(page))}`,
+)
+const rowsBeforeBackspace = (await outlineOf(page)).length
+await page.keyboard.press('Backspace')
+await page.waitForTimeout(100)
+check(
+  'backspace does not merge into the hidden parent',
+  (await outlineOf(page)).length === rowsBeforeBackspace,
+)
+await page.keyboard.press('Shift+Tab')
+await page.waitForTimeout(100)
+check(
+  'shift-tab does not lift the row out of the view',
+  (await outlineOf(page)).length === rowsBeforeBackspace,
+)
+check(
+  'and the outdent button knows it too',
+  await page.locator('.bar button[aria-label="Outdent"]').isDisabled(),
+)
+
+console.log('\nzooming out again')
+await page.locator('nav button', { hasText: 'All items' }).click()
+await page.waitForTimeout(150)
+check('the whole document is back', (await outlineOf(page)).length === 8)
+check('the breadcrumb is gone', (await page.locator('nav').count()) === 0)
+
+console.log('\nnested zoom builds a trail')
+await zoomDot('Welcome').click()
+await page.waitForTimeout(120)
+await zoomDot('Tap a bullet with children to fold it').count()
+// Zoom one level deeper using a child that has no children of its own.
+await zoomDot('Tab indents, Shift-Tab outdents').click()
+await page.waitForTimeout(150)
+const trail = await page.$$eval('nav ol button', (nodes) =>
+  nodes.map((n) => n.textContent),
+)
+equal('the trail lists each ancestor', trail, ['All items', 'Welcome'])
+check(
+  'the deepest item is the title',
+  (await page.locator('nav h2').textContent()) ===
+    'Tab indents, Shift-Tab outdents',
+)
+check('an emptied zoom shows no rows', (await outlineOf(page)).length === 0)
+
+console.log('\nan empty zoomed item can still be typed into')
+const outlineBox2 = await page.locator('.outline').boundingBox()
+await page
+  .locator('.outline')
+  .click({ position: { x: outlineBox2.width / 2, y: outlineBox2.height - 24 } })
+await page.keyboard.type('first child')
+check(
+  'tapping below creates a child of the zoomed item',
+  (await outlineOf(page)).includes('first child'),
+  JSON.stringify(await outlineOf(page)),
+)
+
+console.log('\nescape zooms out one level')
+await page.keyboard.press('Escape')
+await page.waitForTimeout(150)
+check(
+  'it lands on the parent, not all the way out',
+  (await page.locator('nav h2').textContent()) === 'Welcome',
+  await page.locator('nav h2').textContent(),
+)
+
+console.log('\nthe fold chevron and the zoom dot are separate controls')
+await page.locator('nav button', { hasText: 'All items' }).click()
+await page.waitForTimeout(150)
+const beforeFold = (await outlineOf(page)).length
+await page.locator('.row', { hasText: 'Welcome' }).first().locator('.fold').click()
+await page.waitForTimeout(150)
+check(
+  'the chevron folds rather than zooming',
+  (await outlineOf(page)).length < beforeFold &&
+    (await page.locator('nav').count()) === 0,
 )
 
 console.log('\npersistence across reload')

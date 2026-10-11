@@ -9,6 +9,7 @@
   import type { ItemId } from './model'
   import {
     findItem,
+    isDescendantOf,
     nextVisible,
     previousSibling,
     previousVisible,
@@ -26,14 +27,28 @@
 
   interface Props {
     store: DocStore
+    /** The item the view is rooted at, or `null` for the whole document. */
+    zoomId?: ItemId | null
+    onzoom?: (id: ItemId | null) => void
     /** Called after anything that changes the document. */
     onchange?: () => void
   }
 
-  let { store, onchange }: Props = $props()
+  let { store, zoomId = null, onzoom, onchange }: Props = $props()
 
   const plaintextOnly = supportsPlaintextOnly()
-  const rows = $derived(store.rows())
+  const zoomRootId = $derived(zoomId ?? store.doc.rootId)
+  const rows = $derived(store.rows(zoomRootId))
+
+  /**
+   * Whether an item is inside the zoomed view. Navigation, merging and
+   * outdenting all have to stop at the zoom boundary, or they would quietly
+   * act on rows the user cannot see.
+   */
+  function withinZoom(id: ItemId): boolean {
+    if (zoomId === null) return true
+    return isDescendantOf(store.doc, id, zoomId)
+  }
 
   /**
    * Live row elements, published by each `Row`. Not reactive state — it is a
@@ -212,7 +227,8 @@
     if (activeId === null) return false
     const item = findItem(store.doc, activeId)
     if (item === undefined || item.parent === null) return false
-    return item.parent !== store.doc.rootId
+    // The zoom root is the shallowest level the view can express.
+    return item.parent !== zoomRootId
   })
 
   function indentActive(): void {
@@ -220,7 +236,9 @@
   }
 
   function outdentActive(): void {
-    runOnActive((id) => store.outdent(id))
+    runOnActive((id) => {
+      if (findItem(store.doc, id)?.parent !== zoomRootId) store.outdent(id)
+    })
   }
 
   function runOnActive(operation: (id: ItemId) => void): void {
@@ -451,6 +469,18 @@
     autoScrollFrame = null
   }
 
+  function handleZoom(id: ItemId): void {
+    // A drag that ended on this control must not also zoom.
+    if (dragJustEnded) return
+    onzoom?.(id)
+  }
+
+  function zoomOut(): void {
+    if (zoomId === null) return
+    const parent = findItem(store.doc, zoomId)?.parent ?? null
+    onzoom?.(parent === null || parent === store.doc.rootId ? null : parent)
+  }
+
   function handleToggle(id: ItemId): void {
     if (dragJustEnded) return
     store.toggleCollapsed(id)
@@ -506,7 +536,14 @@
     }
     if (event.target !== event.currentTarget) return
     const last = rows[rows.length - 1]
-    if (last === undefined) return
+    if (last === undefined) {
+      // A zoomed item whose children were all removed still needs somewhere
+      // to type.
+      event.preventDefault()
+      store.appendChild(zoomRootId)
+      void afterEdit()
+      return
+    }
 
     event.preventDefault()
     const text = store.textOf(last.id)
@@ -548,14 +585,30 @@
       case 'Tab': {
         event.preventDefault()
         syncText(id, el)
-        if (event.shiftKey) store.outdent(id)
-        else store.indent(id)
+        if (event.shiftKey) {
+          // Outdenting a direct child of the zoom root would lift it out of
+          // the view it is being edited in.
+          if (findItem(store.doc, id)?.parent !== zoomRootId) store.outdent(id)
+        } else {
+          store.indent(id)
+        }
         void afterEdit()
+        return
+      }
+
+      case 'Escape': {
+        if (zoomId === null) return
+        event.preventDefault()
+        zoomOut()
         return
       }
 
       case 'Backspace': {
         if (!hasCollapsedSelection() || caretOffsetIn(el) !== 0) return
+        const into = previousVisible(store.doc, id)
+        // Merging into a row outside the zoom would move text somewhere the
+        // user cannot see.
+        if (into === undefined || !withinZoom(into)) return
         event.preventDefault()
         syncText(id, el)
         store.mergeWithPrevious(id)
@@ -568,7 +621,7 @@
         // should keep moving the caret and we only take over at the real edge.
         if (!hasCollapsedSelection() || !isOnFirstVisualLine(el)) return
         const target = previousVisible(store.doc, id)
-        if (target === undefined) return
+        if (target === undefined || !withinZoom(target)) return
         event.preventDefault()
         moveToRow(el, target)
         return
@@ -577,7 +630,7 @@
       case 'ArrowDown': {
         if (!hasCollapsedSelection() || !isOnLastVisualLine(el)) return
         const target = nextVisible(store.doc, id)
-        if (target === undefined) return
+        if (target === undefined || !withinZoom(target)) return
         event.preventDefault()
         moveToRow(el, target)
         return
@@ -586,7 +639,7 @@
       case 'ArrowLeft': {
         if (!hasCollapsedSelection() || caretOffsetIn(el) !== 0) return
         const target = previousVisible(store.doc, id)
-        if (target === undefined) return
+        if (target === undefined || !withinZoom(target)) return
         event.preventDefault()
         focusRow(target, store.textOf(target).length)
         return
@@ -596,7 +649,7 @@
         const length = (el.textContent ?? '').length
         if (!hasCollapsedSelection() || caretOffsetIn(el) !== length) return
         const target = nextVisible(store.doc, id)
-        if (target === undefined) return
+        if (target === undefined || !withinZoom(target)) return
         event.preventDefault()
         focusRow(target, 0)
         return
@@ -666,6 +719,7 @@
       {plaintextOnly}
       {register}
       ontoggle={handleToggle}
+      onzoom={handleZoom}
       ondelete={(id) => handleDelete(id, false)}
       ondragstart={handleDragStart}
       focused={activeId === row.id}

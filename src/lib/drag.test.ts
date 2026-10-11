@@ -237,3 +237,38 @@ describe('projectDrop and moveItem together', () => {
     expect(validateDoc(doc)).toEqual([])
   })
 })
+
+describe('projectDrop inside a zoomed view', () => {
+  const doc = docFromOutline(TREE)
+
+  it('treats depth 0 as a child of the zoom root, not the document root', () => {
+    // Zoomed into 'a', its children render at depth 0.
+    const zoomed = visibleRows(doc, idOf(doc, 'a')).filter(
+      (row) => row.id !== idOf(doc, 'd'),
+    )
+    const target = projectDrop(doc, zoomed, zoomed.length, 0, idOf(doc, 'a'))
+    expect(target).toEqual({
+      parentId: idOf(doc, 'a'),
+      afterId: idOf(doc, 'b'),
+      depth: 0,
+    })
+  })
+
+  it('drops at the top of a zoomed view as its first child', () => {
+    const zoomed = visibleRows(doc, idOf(doc, 'a'))
+    expect(projectDrop(doc, zoomed, 0, 0, idOf(doc, 'a'))).toEqual({
+      parentId: idOf(doc, 'a'),
+      afterId: null,
+      depth: 0,
+    })
+  })
+
+  it('still nests deeper within the zoomed subtree', () => {
+    const zoomed = visibleRows(doc, idOf(doc, 'a')).filter(
+      (row) => row.id !== idOf(doc, 'd'),
+    )
+    // Below 'c', dragged right: becomes a child of 'c'.
+    const target = projectDrop(doc, zoomed, zoomed.length, 9, idOf(doc, 'a'))
+    expect(target.parentId).toBe(idOf(doc, 'c'))
+  })
+})

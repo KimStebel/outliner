@@ -138,6 +138,17 @@ export function isDescendantOf(doc: Doc, id: ItemId, ancestorId: ItemId): boolea
   return false
 }
 
+/** Ids from the outermost ancestor down to `id`'s parent, root included. */
+export function ancestorsOf(doc: Doc, id: ItemId): ItemId[] {
+  const path: ItemId[] = []
+  let cursor = getItem(doc, id).parent
+  while (cursor !== null) {
+    path.unshift(cursor)
+    cursor = getItem(doc, cursor).parent
+  }
+  return path
+}
+
 /** Pre-order ids of the subtree rooted at `id`, including `id` itself. */
 export function subtreeIds(doc: Doc, id: ItemId): ItemId[] {
   const out: ItemId[] = []

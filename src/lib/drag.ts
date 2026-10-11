@@ -51,11 +51,13 @@ export function projectDrop(
   rows: readonly Row[],
   gapIndex: number,
   desiredDepth: number,
+  /** The item the view is rooted at; depth 0 means a child of this. */
+  rootId: ItemId = doc.rootId,
 ): DropTarget {
   const previous = rows[gapIndex - 1]
   if (previous === undefined) {
     // Above everything: the only possibility is first child of the root.
-    return { parentId: doc.rootId, afterId: null, depth: 0 }
+    return { parentId: rootId, afterId: null, depth: 0 }
   }
 
   const next = rows[gapIndex]
@@ -77,7 +79,7 @@ export function projectDrop(
   }
 
   return {
-    parentId: getItem(doc, anchor).parent ?? doc.rootId,
+    parentId: getItem(doc, anchor).parent ?? rootId,
     afterId: anchor,
     depth,
   }

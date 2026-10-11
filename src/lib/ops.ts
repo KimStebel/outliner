@@ -174,6 +174,17 @@ export function replaceRange(
   return { id: last.id, offset: (rest[rest.length - 1] ?? '').length }
 }
 
+/** Append an empty child to `parentId`. Used to restart an emptied view. */
+export function appendChild(tx: Tx, ctx: OpContext, parentId: ItemId): Caret {
+  const item = createItem(ctx.newId(), parentId, '')
+  tx.insert(item)
+  tx.update(parentId, (parent) => {
+    parent.children.push(item.id)
+    parent.collapsed = false
+  })
+  return { id: item.id, offset: 0 }
+}
+
 /** Insert an empty sibling directly after `id`, regardless of children. */
 export function insertAfter(tx: Tx, ctx: OpContext, id: ItemId): Caret {
   const item = tx.get(id)
