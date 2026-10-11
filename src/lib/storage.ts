@@ -127,6 +127,24 @@ export function createPersistedStore<T>(
   }
 }
 
+/**
+ * `localStorage` if it is usable, otherwise an in-memory stand-in.
+ *
+ * Merely reading `window.localStorage` throws in some privacy modes and in
+ * partitioned third-party contexts, and a context that allows the getter can
+ * still throw on write — so probe with a real write rather than feature-detect.
+ */
+export function createBrowserStorage(): StorageLike {
+  try {
+    const probe = '__outliner_probe__'
+    window.localStorage.setItem(probe, '1')
+    window.localStorage.removeItem(probe)
+    return window.localStorage
+  } catch {
+    return createMemoryStorage()
+  }
+}
+
 /** In-memory `StorageLike`, for tests and for browsers that deny localStorage. */
 export function createMemoryStorage(
   initial: Record<string, string> = {},

@@ -118,8 +118,15 @@ export class DocStore {
     })
   }
 
-  splitItem(id: ItemId, offset: number): void {
-    this.transact('split', (tx) => ops.splitItem(tx, this.ctx, id, offset))
+  splitItem(id: ItemId, start: number, end: number = start): void {
+    this.transact('split', (tx) => ops.splitItem(tx, this.ctx, id, start, end))
+  }
+
+  /** Replace a range with text; multi-line text becomes multiple rows. */
+  replaceRange(id: ItemId, start: number, end: number, text: string): void {
+    this.transact('paste', (tx) =>
+      ops.replaceRange(tx, this.ctx, id, start, end, text),
+    )
   }
 
   insertAfter(id: ItemId): void {

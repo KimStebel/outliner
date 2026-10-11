@@ -9,6 +9,7 @@ import {
   mergeWithPrevious,
   outdentItem,
   removeSubtree,
+  replaceRange,
   setCollapsed,
   splitItem,
   toggleCollapsed,
@@ -120,6 +121,107 @@ describe('splitItem', () => {
   it('clamps an out-of-range offset', () => {
     const r = apply('ab', (tx, ctx, doc) => splitItem(tx, ctx, idOf(doc, 'ab'), 99))
     expect(r.after).toBe('ab\n')
+  })
+
+  it('discards a selected range, as Enter does in any text field', () => {
+    const r = apply('abcdef', (tx, ctx, doc) =>
+      splitItem(tx, ctx, idOf(doc, 'abcdef'), 2, 4),
+    )
+    expect(r.after).toBe('ab\nef')
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('does not push the line down when a selection starts at offset 0', () => {
+    const r = apply('abc', (tx, ctx, doc) =>
+      splitItem(tx, ctx, idOf(doc, 'abc'), 0, 2),
+    )
+    expect(r.after).toBe('\nc')
+  })
+
+  it('accepts a backwards selection', () => {
+    const r = apply('abcdef', (tx, ctx, doc) =>
+      splitItem(tx, ctx, idOf(doc, 'abcdef'), 4, 2),
+    )
+    expect(r.after).toBe('ab\nef')
+  })
+})
+
+describe('replaceRange', () => {
+  it('inserts single-line text at the caret', () => {
+    const r = apply('ac', (tx, ctx, doc) =>
+      replaceRange(tx, ctx, idOf(doc, 'ac'), 1, 1, 'b'),
+    )
+    expect(r.after).toBe('abc')
+    expect(r.caret).toEqual({ id: 'i1', offset: 2 })
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('replaces a selected range', () => {
+    const r = apply('hello world', (tx, ctx, doc) =>
+      replaceRange(tx, ctx, idOf(doc, 'hello world'), 0, 5, 'goodbye'),
+    )
+    expect(r.after).toBe('goodbye world')
+    expect(r.caret).toEqual({ id: 'i1', offset: 7 })
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('turns multi-line text into separate rows', () => {
+    // A row holds one line; flattening the breaks would discard the structure.
+    const r = apply('x', (tx, ctx, doc) =>
+      replaceRange(tx, ctx, idOf(doc, 'x'), 1, 1, 'one\ntwo\nthree'),
+    )
+    expect(r.after).toBe('xone\ntwo\nthree')
+    expect(r.caret).toEqual({ id: 'n2', offset: 5 })
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('carries the trailing text onto the final new row', () => {
+    const r = apply('ab', (tx, ctx, doc) =>
+      replaceRange(tx, ctx, idOf(doc, 'ab'), 1, 1, 'one\ntwo'),
+    )
+    expect(r.after).toBe('aone\ntwob')
+    // The caret lands after the pasted text, before the text that followed it.
+    expect(r.caret).toEqual({ id: 'n1', offset: 3 })
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('nests pasted rows as first children when the item has visible children', () => {
+    const r = apply(
+      outline`
+        a
+          kid
+      `,
+      (tx, ctx, doc) => replaceRange(tx, ctx, idOf(doc, 'a'), 1, 1, '\none\ntwo'),
+    )
+    expect(r.after).toBe('a\n  one\n  two\n  kid')
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('drops a single trailing newline rather than leaving an empty row', () => {
+    const r = apply('x', (tx, ctx, doc) =>
+      replaceRange(tx, ctx, idOf(doc, 'x'), 1, 1, '\none\ntwo\n'),
+    )
+    expect(r.after).toBe('x\none\ntwo')
+  })
+
+  it('handles every newline flavour', () => {
+    for (const nl of ['\n', '\r\n', '\r']) {
+      const r = apply('x', (tx, ctx, doc) =>
+        replaceRange(tx, ctx, idOf(doc, 'x'), 1, 1, `a${nl}b`),
+      )
+      expect(r.after).toBe('xa\nb')
+    }
+  })
+
+  it('records one undo step for a large paste', () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n')
+    const doc = docFromOutline('x')
+    const tx = new Tx(doc)
+    replaceRange(tx, { newId: createSequentialIds('n') }, 'i1', 1, 1, lines)
+    expect(validateDoc(doc)).toEqual([])
+    expect(getItem(doc, doc.rootId).children).toHaveLength(50)
+    // One transaction: the root, the edited row, and the 49 new rows.
+    expect(tx.collect()).toHaveLength(51)
   })
 })
 

@@ -27,16 +27,17 @@ npm install
 
 ## Commands
 
-| Command                | Purpose                                    |
-| ---------------------- | ------------------------------------------ |
-| `npm run dev`          | Dev server, exposed on the LAN (see below) |
-| `npm run build`        | Production build to `dist/`                |
-| `npm run preview`      | Serve the production build                 |
-| `npm test`             | Run unit tests once                        |
-| `npm run test:watch`   | Unit tests in watch mode                   |
-| `npm run check`        | Typecheck (`svelte-check` + `tsc`)         |
-| `npm run format`       | Format in place                            |
-| `npm run format:check` | Verify formatting                          |
+| Command                | Purpose                                     |
+| ---------------------- | ------------------------------------------- |
+| `npm run dev`          | Dev server, exposed on the LAN (see below)  |
+| `npm run build`        | Production build to `dist/`                 |
+| `npm run preview`      | Serve the production build                  |
+| `npm test`             | Run unit tests once                         |
+| `npm run e2e`          | Build, then drive the app in a real browser |
+| `npm run test:watch`   | Unit tests in watch mode                    |
+| `npm run check`        | Typecheck (`svelte-check` + `tsc`)          |
+| `npm run format`       | Format in place                             |
+| `npm run format:check` | Verify formatting                           |
 
 `npm run dev` binds to `0.0.0.0` and prints a Network URL. Open that on a real
 phone — touch gestures, momentum scrolling, and virtual-keyboard behaviour are
@@ -79,8 +80,36 @@ the redo stack intact.
 | `test-utils.ts` | Outline notation (`a` / `  b` / `> collapsed`) for tests.   |
 
 Nothing below `store.ts` imports Svelte, so the whole core is testable in plain
-Node. Phase 2 wraps the `Doc` in `$state`; because ops mutate records in place,
-Svelte's deep proxy will invalidate only the affected row.
+Node. `editor.svelte.ts` is the only seam: it wraps the `Doc` in `$state`, and
+because ops mutate records in place, Svelte's deep proxy invalidates only the
+fields actually touched. Typing changes `item.text`, which no layout code reads,
+so a keystroke does not recompute the row list.
+
+### The UI layer
+
+| File               | Role                                                  |
+| ------------------ | ----------------------------------------------------- |
+| `editor.svelte.ts` | Wraps the doc in `$state` and hands it to the store.  |
+| `caret.ts`         | DOM selection <-> character offsets; line geometry.   |
+| `Outline.svelte`   | Renders rows; owns all key, input and paste handling. |
+| `Row.svelte`       | One row: bullet plus its `contenteditable`.           |
+| `welcome.ts`       | The first-run document.                               |
+
+Three things carry the weight here:
+
+**The editable's text is never interpolated in the markup.** `Row.svelte` writes
+it with an effect, and only when it diverges from the model. If Svelte owned the
+text node it would replace it on every keystroke and destroy the caret; writing
+only on divergence makes typing a no-op while still letting undo, merge and
+paste land.
+
+**Events are delegated to the container**, so adding a row costs no listeners
+and handlers can find their row from `data-item-id`.
+
+**Arrow keys consult geometry, not offsets.** Inside a row whose text wraps, the
+browser should keep moving the caret and we only take over at the real first or
+last visual line — an `offset === 0` test would jump rows from the middle of a
+wrapped line.
 
 ### Editing semantics worth knowing
 
@@ -99,12 +128,23 @@ Svelte's deep proxy will invalidate only the affected row.
 - **Typing coalesces** into one undo step per item within a 600 ms window, so
   undo is not per-character. A structural edit or a caret move breaks the step.
 - The document is never left empty; deleting the last item creates a fresh one.
+- **Pasting multi-line text makes multiple rows**, in one undo step. A row holds
+  one line by definition, so flattening the breaks would silently discard the
+  structure that was just pasted. Paste is always intercepted and reduced to
+  `text/plain`.
+- **Tapping below the list** appends a sibling of the last row — the same thing
+  pressing Enter there would do.
+
+`contenteditable="plaintext-only"` is used where supported, but it is
+feature-detected rather than assumed: an unrecognised value maps to `inherit`,
+which would leave rows _not editable at all_. The fallback is `true` plus our
+own paste interception and suppression of the bold/italic/underline shortcuts.
 
 ## Roadmap
 
 - [x] **0** Toolchain, scaffold, base styles, debounced persistence helper
 - [x] **1** Document model + ops + undo stack (headless, unit-tested)
-- [ ] **2** List renderer, per-item `contenteditable`, Enter/Backspace/arrows
+- [x] **2** List renderer, per-item `contenteditable`, Enter/Backspace/arrows
 - [ ] **3** Swipe-right to delete subtree, with undo toast
 - [ ] **4** Toolbar pinned above the virtual keyboard (indent/outdent/collapse)
 - [ ] **5** Collapse/expand and zoom-into-item with breadcrumb

@@ -47,14 +47,23 @@ export function toggleCollapsed(tx: Tx, id: ItemId): null {
   return setCollapsed(tx, id, !tx.get(id).collapsed)
 }
 
+/** Order and clamp a selection range against the text it indexes into. */
+function clampRange(text: string, start: number, end: number): [number, number] {
+  const lo = Math.max(0, Math.min(Math.min(start, end), text.length))
+  const hi = Math.max(lo, Math.min(Math.max(start, end), text.length))
+  return [lo, hi]
+}
+
 /**
- * Enter. Splits `id` at `offset`.
+ * Enter. Splits `id` at the caret, discarding any selected range so that
+ * pressing Enter over a selection replaces it, as in any text field.
  *
  * Three cases, matching what outliners do and what the caret makes you expect:
  *
- * - At offset 0 of a non-empty item, push the current line down: a new empty
- *   sibling goes *above*, and the caret stays put. Moving all the text into a
- *   new record instead would make the caret appear to jump.
+ * - At a collapsed caret at offset 0 of a non-empty item, push the current
+ *   line down: a new empty sibling goes *above*, and the caret stays put.
+ *   Moving all the text into a new record instead would make the caret appear
+ *   to jump.
  * - If the item has visible children, the tail becomes the new *first child* —
  *   the children belong to the head, so a sibling would detach them.
  * - Otherwise the tail becomes the next sibling.
@@ -63,14 +72,15 @@ export function splitItem(
   tx: Tx,
   ctx: OpContext,
   id: ItemId,
-  offset: number,
+  start: number,
+  end: number = start,
 ): Caret {
   const item = tx.get(id)
-  const clamped = Math.max(0, Math.min(offset, item.text.length))
-  const head = item.text.slice(0, clamped)
-  const tail = item.text.slice(clamped)
+  const [from, to] = clampRange(item.text, start, end)
+  const head = item.text.slice(0, from)
+  const tail = item.text.slice(to)
 
-  if (clamped === 0 && item.text.length > 0) {
+  if (from === 0 && to === 0 && item.text.length > 0) {
     const sibling = createItem(ctx.newId(), item.parent, '')
     insertSiblingAt(tx, sibling, id, 'before')
     return { id, offset: 0 }
@@ -93,6 +103,74 @@ export function splitItem(
   const sibling = createItem(ctx.newId(), item.parent, tail)
   insertSiblingAt(tx, sibling, id, 'after')
   return { id: sibling.id, offset: 0 }
+}
+
+/**
+ * Replace the range `[start, end)` of `id` with `text` — the paste path, and
+ * also how typed input over a selection is applied.
+ *
+ * Multi-line text becomes multiple items rather than one item containing
+ * newlines: a row holds a single line by definition, and flattening the breaks
+ * to spaces would silently discard the structure someone just pasted. The whole
+ * insert is one transaction, so pasting fifty lines is still one undo step.
+ *
+ * New items go where {@link splitItem} would put them: first children if the
+ * item has visible children, otherwise next siblings.
+ */
+export function replaceRange(
+  tx: Tx,
+  ctx: OpContext,
+  id: ItemId,
+  start: number,
+  end: number,
+  text: string,
+): Caret {
+  const item = tx.get(id)
+  const [from, to] = clampRange(item.text, start, end)
+  const head = item.text.slice(0, from)
+  const tail = item.text.slice(to)
+
+  const lines = text.split(/\r\n|\r|\n/)
+  // A trailing newline is a routine copy artefact and should not leave an
+  // empty row behind.
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  const first = lines[0] ?? ''
+
+  if (lines.length === 1) {
+    tx.update(id, (target) => {
+      target.text = head + first + tail
+    })
+    return { id, offset: head.length + first.length }
+  }
+
+  tx.update(id, (target) => {
+    target.text = head + first
+  })
+
+  const rest = lines.slice(1)
+  const asChildren = item.children.length > 0 && !item.collapsed
+  const containerId = asChildren ? id : item.parent
+  if (containerId === null) throw new Error('Cannot insert text into the root')
+  const insertAtIndex = asChildren
+    ? 0
+    : tx.get(containerId).children.indexOf(id) + 1
+
+  const created = rest.map((line, index) =>
+    // The text that followed the caret rides along on the final new row.
+    createItem(
+      ctx.newId(),
+      containerId,
+      line + (index === rest.length - 1 ? tail : ''),
+    ),
+  )
+  for (const row of created) tx.insert(row)
+  tx.update(containerId, (container) => {
+    container.children.splice(insertAtIndex, 0, ...created.map((row) => row.id))
+  })
+
+  const last = created[created.length - 1]
+  if (last === undefined) return { id, offset: head.length + first.length }
+  return { id: last.id, offset: (rest[rest.length - 1] ?? '').length }
 }
 
 /** Insert an empty sibling directly after `id`, regardless of children. */
