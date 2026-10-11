@@ -1,0 +1,25 @@
+{
+  "extends": "@tsconfig/svelte/tsconfig.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "es2023",
+    "module": "esnext",
+    "types": ["svelte", "vite/client", "vitest/globals"],
+    "allowArbitraryExtensions": true,
+    "noEmit": true,
+    "moduleDetection": "force",
+
+    /* The data model is a Record<ItemId, Item>, so every lookup may miss.
+       Make the compiler surface that instead of letting `undefined` through. */
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    /* No JS in this project; keep it TS-only. */
+    "allowJs": false,
+    "checkJs": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte"]
+}

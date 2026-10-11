@@ -1,0 +1,78 @@
+/* Base styles. Mobile-first: everything here targets a phone, and wider
+   screens are layered on in later phases via min-width queries. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1c1b1f;
+  --fg-dim: #6b6875;
+  --bullet: #b9b6c0;
+  --accent: #4f46e5;
+  --danger: #dc2626;
+  --surface: #f4f3f6;
+  --border: #e5e4e8;
+
+  /* Row metrics. --row-pad-y is deliberately generous: rows double as
+     touch targets for tap-to-focus and swipe-to-delete. */
+  --row-pad-y: 0.5rem;
+  --indent: 1.375rem;
+
+  --sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161a;
+    --fg: #ececf1;
+    --fg-dim: #9b98a6;
+    --bullet: #55525e;
+    --accent: #a5a0f5;
+    --danger: #f87171;
+    --surface: #232329;
+    --border: #2f2f36;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  /* 17px keeps editable text above the 16px threshold that makes iOS Safari
+     zoom in when a field is focused. */
+  font: 17px/1.45 var(--sans);
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* The list scrolls in its own container; the page itself must not bounce,
+     or the pinned keyboard toolbar in phase 4 will drift. */
+  overscroll-behavior-y: none;
+}
+
+#app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Remove the grey flash when tapping a row on mobile WebKit. */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
