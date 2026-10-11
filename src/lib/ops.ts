@@ -231,31 +231,57 @@ export function removeSubtree(tx: Tx, ctx: OpContext, id: ItemId): Caret | null 
  * Backspace at offset 0. Appends this item's text to the preceding visible row
  * and deletes it.
  *
- * Refused when the item has children: there is no non-surprising place to put
- * them, and silently reparenting a subtree on a Backspace would be a great way
- * to lose work. The UI should offer outdent instead.
+ * Any children follow the text to the item it merged into, so nothing is ever
+ * dropped. Where they land depends on which row preceded this one:
+ *
+ * - Merging a *first child* into its parent puts them at the position the item
+ *   itself occupied, so the siblings that followed it keep their place.
+ * - Otherwise the previous visible row is, by construction, the deepest
+ *   last-descendant before this item, so appending keeps document order.
+ *
+ * Either way the destination is expanded when it adopts children: dropping
+ * them into a collapsed item would make them vanish on a keystroke, which
+ * reads as data loss even though nothing was lost.
  */
 export function mergeWithPrevious(tx: Tx, id: ItemId): Caret | null {
   const item = tx.get(id)
   if (item.parent === null) return null
-  if (item.children.length > 0) return null
 
   const previousId = previousVisible(tx.doc, id)
   if (previousId === undefined) return null
 
-  const previous = tx.get(previousId)
-  const joinOffset = previous.text.length
+  const parentId = item.parent
+  const joinOffset = tx.get(previousId).text.length
   const carriedText = item.text
+  const adopted = [...item.children]
+  const vacatedIndex = tx.get(parentId).children.indexOf(id)
 
-  tx.update(item.parent, (parent) => {
-    parent.children.splice(parent.children.indexOf(id), 1)
+  tx.update(parentId, (parent) => {
+    parent.children.splice(vacatedIndex, 1)
   })
-  tx.remove(id)
+
+  if (adopted.length > 0) {
+    for (const childId of adopted) {
+      tx.update(childId, (child) => {
+        child.parent = previousId
+      })
+    }
+    tx.update(previousId, (target) => {
+      if (previousId === parentId) {
+        target.children.splice(vacatedIndex, 0, ...adopted)
+      } else {
+        target.children.push(...adopted)
+      }
+      target.collapsed = false
+    })
+  }
+
   if (carriedText.length > 0) {
     tx.update(previousId, (target) => {
       target.text += carriedText
     })
   }
+  tx.remove(id)
   return { id: previousId, offset: joinOffset }
 }
 

@@ -263,8 +263,7 @@ describe('mergeWithPrevious', () => {
     expect(r.undo()).toBe(r.before)
   })
 
-  it('refuses to merge an item that has children', () => {
-    // Reparenting a subtree on a Backspace is a quiet way to lose work.
+  it('carries the children along to the item it merged into', () => {
     const r = apply(
       outline`
         a
@@ -273,8 +272,84 @@ describe('mergeWithPrevious', () => {
       `,
       (tx, _ctx, doc) => mergeWithPrevious(tx, idOf(doc, 'b')),
     )
-    expect(r.after).toBe(r.before)
-    expect(r.caret).toBeNull()
+    expect(r.after).toBe('ab\n  c')
+    expect(r.caret).toEqual({ id: 'i1', offset: 1 })
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('puts a first child’s children in the place it vacated', () => {
+    // 'x' takes 'b's slot, so 'c' keeps its position rather than jumping above.
+    const r = apply(
+      outline`
+        a
+          b
+            x
+          c
+      `,
+      (tx, _ctx, doc) => mergeWithPrevious(tx, idOf(doc, 'b')),
+    )
+    expect(r.after).toBe('ab\n  x\n  c')
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('appends the children after those the destination already had', () => {
+    const r = apply(
+      outline`
+        a
+          y
+        b
+          x
+      `,
+      (tx, _ctx, doc) => mergeWithPrevious(tx, idOf(doc, 'b')),
+    )
+    // 'b' merges into 'y', the deepest row before it, so 'x' follows 'y'.
+    expect(r.after).toBe('a\n  yb\n    x')
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('preserves document order when merging into a deep last descendant', () => {
+    const r = apply(
+      outline`
+        a
+          b
+            y
+        c
+          x
+      `,
+      (tx, _ctx, doc) => mergeWithPrevious(tx, idOf(doc, 'c')),
+    )
+    expect(r.after).toBe('a\n  b\n    yc\n      x')
+    expect(visibleOutlineOf(r.doc)).toBe('a\n  b\n    yc\n      x')
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('expands a collapsed destination so adopted children stay visible', () => {
+    const r = apply(
+      outline`
+        > a
+          y
+        b
+          x
+      `,
+      (tx, _ctx, doc) => mergeWithPrevious(tx, idOf(doc, 'b')),
+    )
+    expect(getItem(r.doc, idOf(r.doc, 'ab')).collapsed).toBe(false)
+    expect(r.after).toBe('ab\n  y\n  x')
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('leaves the collapse state alone when there are no children to adopt', () => {
+    const r = apply(
+      outline`
+        > a
+          y
+        b
+      `,
+      (tx, _ctx, doc) => mergeWithPrevious(tx, idOf(doc, 'b')),
+    )
+    expect(getItem(r.doc, idOf(r.doc, 'ab')).collapsed).toBe(true)
+    expect(r.after).toBe('> ab\n  y')
+    expect(r.undo()).toBe(r.before)
   })
 
   it('is a no-op on the very first row', () => {

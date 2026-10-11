@@ -90,9 +90,12 @@ Svelte's deep proxy will invalidate only the affected row.
   the head.
 - **Shift-Tab** adopts any following siblings as children. Without that, outdent
   would silently reorder the document on screen.
-- **Backspace at offset 0** merges into the previous _visible_ row, but is
-  refused when the item has children — quietly reparenting a subtree is a good
-  way to lose work.
+- **Backspace at offset 0** merges into the previous _visible_ row, children and
+  all. Merging a first child into its parent leaves the children in the slot the
+  item vacated, so the following siblings keep their place; otherwise they are
+  appended to the destination, which is the deepest row before this one and so
+  preserves document order. The destination is expanded if it adopts children,
+  since dropping them into a collapsed item would look like deletion.
 - **Typing coalesces** into one undo step per item within a 600 ms window, so
   undo is not per-character. A structural edit or a caret move breaks the step.
 - The document is never left empty; deleting the last item creates a fresh one.
