@@ -786,6 +786,99 @@ check(
   `${rowsBeforeTapTest} -> ${(await outlineOf(page)).length}`,
 )
 
+console.log('\nlinks')
+await resetDocument(page)
+await page.locator('[data-item-id]').last().click()
+await page.keyboard.press('End')
+await page.keyboard.press('Enter')
+await page.keyboard.type('docs at https://example.com/x and me@example.com')
+// A URL typed just now only becomes a link once the row loses focus.
+await page.evaluate(() => document.activeElement?.blur())
+await page.waitForTimeout(200)
+
+const links = await page.$$eval('.text a', (nodes) =>
+  nodes.map((n) => ({
+    text: n.textContent,
+    href: n.getAttribute('href'),
+    rel: n.rel,
+    target: n.target,
+  })),
+)
+check(
+  'the URL became a link',
+  links.some((l) => l.href === 'https://example.com/x'),
+  JSON.stringify(links),
+)
+check(
+  'the email became a mailto link',
+  links.some((l) => l.href === 'mailto:me@example.com'),
+  JSON.stringify(links),
+)
+check(
+  'links open in a new tab without handing over the opener',
+  links.every((l) => l.target === '_blank' && l.rel.includes('noopener')),
+  JSON.stringify(links),
+)
+
+// The caret depends on this: rendered characters must equal stored ones.
+const rowText = await page.$$eval('[data-item-id]', (nodes) =>
+  nodes.map((n) => n.textContent).find((t) => t?.includes('docs at')),
+)
+check(
+  'the rendered text is unchanged by linkifying',
+  rowText === 'docs at https://example.com/x and me@example.com',
+  JSON.stringify(rowText),
+)
+
+console.log('\nediting still works in a row containing a link')
+// A short row, so Home and End address the whole text rather than one
+// wrapped visual line.
+await clickRow(page, 'docs at https://example.com/x and me@example.com')
+await page.keyboard.press('End')
+await page.keyboard.press('Enter')
+await page.keyboard.type('see https://a.test')
+await page.evaluate(() => document.activeElement?.blur())
+await page.waitForTimeout(200)
+await clickRow(page, 'see https://a.test')
+
+await page.keyboard.press('End')
+check(
+  'End lands past the anchor at the true text length',
+  (await caretOffset(page)) === 'see https://a.test'.length,
+  String(await caretOffset(page)),
+)
+await page.keyboard.press('Home')
+check('Home reaches offset 0 across the anchor', (await caretOffset(page)) === 0)
+
+await page.keyboard.type('X')
+check(
+  'typing at offset 0 inserts before the link, not inside it',
+  (await focusedRowText(page)) === 'Xsee https://a.test',
+  JSON.stringify(await focusedRowText(page)),
+)
+await page.keyboard.press('End')
+await page.keyboard.type('!')
+check(
+  'and typing at the end appends after it',
+  (await focusedRowText(page)) === 'Xsee https://a.test!',
+  JSON.stringify(await focusedRowText(page)),
+)
+
+console.log('\na dangerous scheme is never turned into a link')
+await page.keyboard.press('End')
+await page.keyboard.press('Enter')
+await page.keyboard.type('javascript:alert(1)')
+await page.evaluate(() => document.activeElement?.blur())
+await page.waitForTimeout(200)
+check(
+  'javascript: stays inert text',
+  (
+    await page.$$eval('.text a', (nodes) =>
+      nodes.map((n) => n.getAttribute('href')),
+    )
+  ).every((href) => href === null || !href.startsWith('javascript:')),
+)
+
 console.log('\npersistence across reload')
 
 const beforeReload = await outlineOf(page)

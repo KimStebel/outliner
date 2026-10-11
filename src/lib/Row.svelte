@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ItemId } from './model'
+  import { segmentText } from './linkify'
 
   interface Props {
     id: ItemId
@@ -16,6 +17,8 @@
     ondraghandle: (id: ItemId, event: PointerEvent) => void
     /** True while this row is the one being dragged. */
     dragging: boolean
+    /** True while the caret is in this row. */
+    focused: boolean
   }
 
   let {
@@ -30,6 +33,7 @@
     ondelete,
     ondraghandle,
     dragging,
+    focused,
   }: Props = $props()
 
   let el: HTMLElement | undefined = $state()
@@ -42,14 +46,42 @@
     return () => register(id, null)
   })
 
+  /**
+   * Paint the row's text, with any URLs wrapped in anchors.
+   *
+   * The rendered characters are exactly the model's characters — links are
+   * decoration, never a substitution — so character offsets stay valid for
+   * the caret code.
+   */
+  function paint(node: HTMLElement, value: string): void {
+    node.textContent = ''
+    for (const segment of segmentText(value)) {
+      if (segment.kind === 'text') {
+        node.appendChild(document.createTextNode(segment.text))
+        continue
+      }
+      const anchor = document.createElement('a')
+      anchor.textContent = segment.text
+      anchor.href = segment.href
+      anchor.target = '_blank'
+      // Without noopener the opened page gets a handle on this window.
+      anchor.rel = 'noopener noreferrer'
+      node.appendChild(anchor)
+    }
+  }
+
   // The editable's content is written here rather than interpolated in the
   // markup: letting Svelte own the text node would make it replace the node on
-  // every keystroke and destroy the caret. Writing only on divergence means
-  // typing is a no-op here, while an external change (undo, merge, paste)
-  // still lands.
+  // every keystroke and destroy the caret.
+  //
+  // Repainting only when the text diverges keeps typing a no-op here. The
+  // extra repaint on losing focus is what turns a URL you just typed into a
+  // link, since during typing the DOM already matches and nothing would
+  // otherwise trigger it.
   $effect(() => {
     const node = el
-    if (node !== undefined && node.textContent !== text) node.textContent = text
+    if (node === undefined) return
+    if (node.textContent !== text || !focused) paint(node, text)
   })
 
   // ---------------------------------------------------------------------------
@@ -348,6 +380,13 @@
     .chevron {
       transition: none;
     }
+  }
+
+  .text :global(a) {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
   }
 
   .text {

@@ -441,10 +441,31 @@
   }
 
   /**
+   * Open a link rather than letting `contenteditable` swallow the click.
+   */
+  function handleClick(event: MouseEvent): void {
+    const anchor = linkFrom(event.target)
+    if (anchor === null) return
+    event.preventDefault()
+    const href = anchor.getAttribute('href')
+    if (href !== null) window.open(href, '_blank', 'noopener,noreferrer')
+  }
+
+  function linkFrom(target: EventTarget | null): Element | null {
+    return target instanceof Element ? target.closest('a[href]') : null
+  }
+
+  /**
    * Tapping the empty space below the list continues it, the way tapping below
    * a note does. Only fires for the container itself, not for rows.
    */
   function handleBackgroundPointerDown(event: PointerEvent): void {
+    if (linkFrom(event.target) !== null) {
+      // Suppressing the default keeps focus out of the row, so tapping a link
+      // does not also open the keyboard over the page it is about to leave.
+      event.preventDefault()
+      return
+    }
     if (event.target !== event.currentTarget) return
     const last = rows[rows.length - 1]
     if (last === undefined) return
@@ -592,6 +613,7 @@
   onkeydown={handleKeydown}
   oninput={handleInput}
   onpaste={handlePaste}
+  onclick={handleClick}
   onpointerdown={handleBackgroundPointerDown}
   onfocusin={handleFocusIn}
   onfocusout={handleFocusOut}
@@ -608,6 +630,7 @@
       ontoggle={handleToggle}
       ondelete={(id) => handleDelete(id, false)}
       ondraghandle={handleDragHandle}
+      focused={activeId === row.id}
       dragging={draggingIds?.has(row.id) ?? false}
     />
   {/each}
