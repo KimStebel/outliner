@@ -153,6 +153,26 @@ arrive.
   `text/plain`.
 - **Tapping below the list** appends a sibling of the last row — the same thing
   pressing Enter there would do.
+- **Drag a bullet to move an item**, children included. Vertical travel picks
+  the gap between rows; horizontal travel picks the depth, which is what makes
+  a drag able to re-parent rather than only reorder. The depth is clamped to
+  what the neighbours allow: at most one level deeper than the row above (there
+  is no intermediate item to adopt you), and never shallower than the row below
+  (which would leave that row under a parent it does not belong to). Moving an
+  item into its own subtree is refused.
+- **Bare URLs, `www.` hosts and email addresses become links.** The rendered
+  characters stay identical to the stored ones — links are decoration, not
+  substitution — because every caret offset is an index into `item.text`. Only
+  `http`, `https` and `mailto` are allowed through; the scheme is checked by
+  URL parsing, so a `javascript:` href can never reach the document. A URL
+  typed just now becomes a link when the row loses focus.
+- **Markdown import** (header button) understands heading level and list
+  indentation as nesting, and also plain indented text. Items are appended, so
+  an import can never destroy what is there, and the whole thing is one undo
+  step. Inline syntax is kept verbatim: rows store what you see, so `**bold**`
+  and `[label](url)` stay as written — the URL inside the latter is still
+  clickable. Task markers `[ ]` / `[x]` are kept as text, since there is no
+  done state to map them onto yet.
 - **Tap a bullet to fold or unfold** its children. A parent's bullet is a
   chevron — pointing down when open, right when folded — so the state is
   readable at a glance; a leaf keeps a plain dot, since a chevron there would
@@ -190,6 +210,8 @@ own paste interception and suppression of the bold/italic/underline shortcuts.
 - [x] **2** List renderer, per-item `contenteditable`, Enter/Backspace/arrows
 - [x] **4** Toolbar pinned above the virtual keyboard (indent/outdent)
 - [x] **3** Swipe-right to delete subtree (undo via header / Ctrl-Z)
-- [ ] **5** Collapse/expand and zoom-into-item with breadcrumb
+- [x] **5a** Collapse/expand with a chevron bullet
+- [x] Drag and drop to move and re-nest; links; markdown import
+- [ ] **5b** Zoom into an item, with a breadcrumb
 - [ ] **6** Perf pass on large lists; PWA manifest + offline
 - [ ] **7** Desktop: keyboard shortcuts, drag-reorder, wider layout

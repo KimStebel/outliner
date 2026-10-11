@@ -879,6 +879,68 @@ check(
   ).every((href) => href === null || !href.startsWith('javascript:')),
 )
 
+console.log('\nmarkdown import')
+await resetDocument(page)
+const beforeImport = (await outlineOf(page)).length
+await page.locator('header button', { hasText: 'Import' }).click()
+check('the dialog opens', await page.locator('dialog').isVisible())
+check(
+  'the import button is inert with nothing to import',
+  await page.locator('dialog .primary').isDisabled(),
+)
+
+await page.locator('dialog textarea').fill(`# Trip
+- passport
+  - renew it
+- tickets
+# Home
+- keys`)
+check(
+  'it counts what will be added',
+  (await page.locator('dialog .primary').textContent())?.includes('6 items'),
+  await page.locator('dialog .primary').textContent(),
+)
+await page.locator('dialog .primary').click()
+await page.waitForTimeout(150)
+check('the dialog closes', !(await page.locator('dialog').isVisible()))
+
+const imported = await outlineOf(page)
+equal(
+  'headings and list indentation become nesting',
+  imported.slice(beforeImport),
+  ['Trip', '  passport', '    renew it', '  tickets', 'Home', '  keys'],
+)
+
+console.log('\nimport is one undo step and is not destructive')
+await page.locator('header button', { hasText: 'Undo' }).click()
+await page.waitForTimeout(100)
+check(
+  'one undo removes the whole import',
+  (await outlineOf(page)).length === beforeImport,
+  `${beforeImport} -> ${(await outlineOf(page)).length}`,
+)
+
+console.log('\ncancelling an import changes nothing')
+await page.locator('header button', { hasText: 'Import' }).click()
+await page.locator('dialog textarea').fill('- nope')
+await page.locator('dialog .ghost').click()
+await page.waitForTimeout(100)
+check('the document is untouched', (await outlineOf(page)).length === beforeImport)
+
+console.log('\nan imported link is clickable')
+await page.locator('header button', { hasText: 'Import' }).click()
+await page.locator('dialog textarea').fill('- docs https://imported.test/page')
+await page.locator('dialog .primary').click()
+await page.waitForTimeout(200)
+check(
+  'the URL from the import rendered as a link',
+  (
+    await page.$$eval('.text a', (nodes) =>
+      nodes.map((n) => n.getAttribute('href')),
+    )
+  ).includes('https://imported.test/page'),
+)
+
 console.log('\npersistence across reload')
 
 const beforeReload = await outlineOf(page)

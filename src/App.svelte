@@ -5,6 +5,7 @@
   import { createBrowserStorage } from './lib/storage'
   import { welcomeDoc } from './lib/welcome'
   import { randomId } from './lib/id'
+  import ImportDialog from './lib/ImportDialog.svelte'
 
   const storage = createDocStorage({
     backend: createBrowserStorage(),
@@ -32,6 +33,14 @@
     return store.canRedo
   })
 
+  let importing = $state(false)
+
+  function handleImport(markdown: string): void {
+    store.importMarkdown(markdown)
+    importing = false
+    handleChange()
+  }
+
   function handleChange(): void {
     revision += 1
     storage.save(envelope(store.doc))
@@ -57,6 +66,7 @@
 <header>
   <h1>Outliner</h1>
   <div class="actions">
+    <button onclick={() => (importing = true)}>Import</button>
     <button onclick={() => (store.undo(), handleChange())} disabled={!canUndo}>
       Undo
     </button>
@@ -65,6 +75,12 @@
     </button>
   </div>
 </header>
+
+<ImportDialog
+  open={importing}
+  onimport={handleImport}
+  onclose={() => (importing = false)}
+/>
 
 <Outline {store} onchange={handleChange} />
 
@@ -105,7 +121,7 @@
     font-size: 0.875rem;
     /* 36px minimum so these stay usable as touch targets. */
     min-height: 2.25rem;
-    padding-inline: 0.75rem;
+    padding-inline: 0.625rem;
     color: var(--fg);
     background: var(--surface);
     border: 1px solid var(--border);

@@ -8,6 +8,7 @@
 
 import type { Caret, Doc, ItemId, Row } from './model'
 import { createDoc, findItem, visibleRows } from './model'
+import { countNodes, parseMarkdown } from './markdown'
 import type { Change } from './tx'
 import { Tx, mergeChanges, reapply, revert } from './tx'
 import * as ops from './ops'
@@ -153,6 +154,46 @@ export class DocStore {
   /** Move an item under a new parent, after a given sibling. Backs drag/drop. */
   moveItem(id: ItemId, newParentId: ItemId, afterId: ItemId | null): void {
     this.transact('move', (tx) => ops.moveItem(tx, id, newParentId, afterId))
+  }
+
+  /**
+   * Append a markdown document to the end of the outline, preserving its
+   * heading and list nesting. Returns how many items were added.
+   *
+   * Appending rather than replacing: an import should never be able to
+   * destroy what is already there, and one undo takes it back out.
+   */
+  importMarkdown(markdown: string): number {
+    const nodes = parseMarkdown(markdown)
+    if (nodes.length === 0) return 0
+
+    this.transact('import', (tx) => {
+      const root = tx.get(this.doc.rootId)
+      const onlyChildId = root.children.length === 1 ? root.children[0] : undefined
+      const onlyChild = onlyChildId === undefined ? undefined : tx.get(onlyChildId)
+      // A pristine document is one empty row; importing into it should not
+      // leave that row stranded above the imported content.
+      const pristine =
+        onlyChild !== undefined &&
+        onlyChild.text === '' &&
+        onlyChild.children.length === 0
+
+      const lastChild = pristine
+        ? null
+        : (root.children[root.children.length - 1] ?? null)
+
+      const caret = ops.insertTree(tx, this.ctx, this.doc.rootId, lastChild, nodes)
+
+      if (pristine && onlyChildId !== undefined) {
+        tx.update(this.doc.rootId, (target) => {
+          target.children.splice(target.children.indexOf(onlyChildId), 1)
+        })
+        tx.remove(onlyChildId)
+      }
+      return caret
+    })
+
+    return countNodes(nodes)
   }
 
   toggleCollapsed(id: ItemId): void {

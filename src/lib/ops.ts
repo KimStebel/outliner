@@ -11,7 +11,7 @@
  * The UI can then bind keys unconditionally without pre-checking.
  */
 
-import type { Caret, Doc, ItemId } from './model'
+import type { Caret, Doc, Item, ItemId } from './model'
 import {
   createItem,
   getItem,
@@ -416,6 +416,54 @@ export function moveItem(
     })
   }
   return null
+}
+
+/**
+ * Insert a parsed tree under `parentId`, after `afterId`. Backs markdown
+ * import: the whole forest lands in one transaction, so an import of a
+ * hundred lines is still a single undo.
+ *
+ * Returns the caret for the end of the last top-level item inserted.
+ */
+export function insertTree(
+  tx: Tx,
+  ctx: OpContext,
+  parentId: ItemId,
+  afterId: ItemId | null,
+  nodes: readonly TreeInput[],
+): Caret | null {
+  // Collected rather than tracked in a mutable local: assigning to a captured
+  // variable inside the closure defeats the narrowing TypeScript applies here.
+  const topLevel: Item[] = []
+
+  const build = (
+    parent: ItemId,
+    list: readonly TreeInput[],
+    startAfter: ItemId | null,
+  ): void => {
+    let after = startAfter
+    for (const node of list) {
+      const item = createItem(ctx.newId(), parent, node.text)
+      tx.insert(item)
+      const previous = after
+      tx.update(parent, (target) => {
+        const at = previous === null ? 0 : target.children.indexOf(previous) + 1
+        target.children.splice(at, 0, item.id)
+      })
+      after = item.id
+      if (parent === parentId) topLevel.push(item)
+      if (node.children.length > 0) build(item.id, node.children, null)
+    }
+  }
+
+  build(parentId, nodes, afterId)
+  const last = topLevel[topLevel.length - 1]
+  return last === undefined ? null : { id: last.id, offset: last.text.length }
+}
+
+export interface TreeInput {
+  text: string
+  children: readonly TreeInput[]
 }
 
 /**
