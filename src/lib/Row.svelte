@@ -137,11 +137,11 @@
     const width = swipeEl?.getBoundingClientRect().width ?? 0
     commitAt = Math.max(MIN_COMMIT_PX, width * COMMIT_FRACTION)
 
-    // While a row is focused, a hold means "select this text" — overriding it
-    // would take away the only way to select inside a row being edited. The
-    // gutter controls still work for dragging in that case.
-    if (focused) return
-
+    // A hold picks the row up even while it is being edited. The row keeps
+    // focus after the keyboard is dismissed, so exempting focused rows left
+    // the last row touched undraggable until something else was tapped.
+    // Moving an item matters more here than holding to select text inside
+    // one, and a double tap still selects a word.
     const start = {
       pointerId: event.pointerId,
       clientX: event.clientX,

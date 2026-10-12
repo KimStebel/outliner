@@ -338,9 +338,11 @@ arrive.
 - **Long-press anywhere on a row to drag it** on touch, so the small bullet is
   not the only handle. The hold is 400ms — under the ~500ms at which phones
   start selecting text, so the drag wins that race — and any movement before it
-  elapses cancels it, leaving scrolling and swipe-to-delete untouched. A row
-  that is currently being edited is exempt: there a hold still means "select
-  this text", and its bullet remains the way to drag it.
+  elapses cancels it, leaving scrolling and swipe-to-delete untouched. This
+  applies to a row being edited too: dismissing the keyboard does not blur the
+  row, so exempting focused rows left the last row touched undraggable until
+  something else was tapped. The cost is hold-to-select inside a focused row;
+  a double tap still selects a word.
 - **Drag a bullet to move an item**, children included. Vertical travel picks
   the gap between rows; horizontal travel picks the depth, which is what makes
   a drag able to re-parent rather than only reorder. The depth is clamped to

@@ -1127,19 +1127,20 @@ const quick = await longPressDrag(page, 'Try it', { dy: -260, hold: 80 })
 check('nothing was picked up', quick.grabbed === 0)
 equal('and the outline is unchanged', await outlineOf(page), beforeQuick)
 
-console.log('\nholding a row that is being edited still selects text')
+console.log('\na row that is being edited can still be dragged')
+// The row keeps focus after the keyboard is dismissed, so a focused row that
+// refused to be picked up left the last row touched undraggable.
 await resetDocument(page)
+const beforeEditingDrag = await outlineOf(page)
 await clickRow(page, 'Try it')
 await page.waitForTimeout(100)
-const whileEditing = await longPressDrag(page, 'Try it', { dy: -120 })
-check('a focused row is not picked up by a hold', whileEditing.grabbed === 0)
+const whileEditing = await longPressDrag(page, 'Try it', { dy: -260 })
+check('holding a focused row picks it up', whileEditing.grabbed > 0)
+const afterEditingDrag = await outlineOf(page)
 check(
-  'so the bullet remains the way to drag it',
-  (await page
-    .locator('.row', { hasText: 'Try it' })
-    .first()
-    .locator('.dot')
-    .count()) === 1,
+  'and it moves',
+  afterEditingDrag.indexOf('Try it') < beforeEditingDrag.indexOf('Try it'),
+  JSON.stringify(afterEditingDrag),
 )
 
 console.log('\nthe bullet still drags without any hold')
