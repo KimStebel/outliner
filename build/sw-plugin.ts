@@ -2,33 +2,65 @@
  * Emits the service worker at build time.
  *
  * It is generated rather than hand-written because the precache list has to
- * name the real hashed filenames, which only exist once the bundle does. The
- * cache name is derived from that same list, so a build that changes any asset
- * gets a new cache and the old one is dropped on activation.
+ * name the real hashed filenames, which only exist once the build does.
+ *
+ * It is generated from the *written output directory*, not from the rollup
+ * bundle: Vite emits `index.html` after this plugin's `generateBundle` would
+ * run, so reading the bundle silently omits the app shell — and a precache
+ * without the shell means the app does not load offline at all.
+ *
+ * The cache name is a hash of everything precached, *contents included*. That
+ * matters: naming the files alone is not enough. Anything whose name does not
+ * change between builds — the manifest, the icons, the app shell — would leave
+ * the generated worker byte-identical, so the browser would see no update,
+ * never install it, and keep serving the previous cache indefinitely. A white
+ * manifest survived a deploy that way, and with it a white splash screen and
+ * navigation bar under a dark app.
  */
 
 import { createHash } from 'node:crypto'
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, posix, relative, sep } from 'node:path'
 import type { Plugin } from 'vite'
 
-/** Files copied verbatim from `public/`; Vite does not list these in the bundle. */
-function publicFiles(root: string): string[] {
-  const dir = join(root, 'public')
-  const found: string[] = []
+export interface Precached {
+  url: string
+  content: string | Uint8Array
+}
+
+/** Everything the build actually wrote, as url/content pairs. */
+function filesIn(dir: string): Precached[] {
+  const found: Precached[] = []
   const walk = (current: string): void => {
     for (const entry of readdirSync(current)) {
       const full = join(current, entry)
       if (statSync(full).isDirectory()) walk(full)
-      else found.push(`/${relative(dir, full).split(sep).join(posix.sep)}`)
+      else {
+        found.push({
+          url: `/${relative(dir, full).split(sep).join(posix.sep)}`,
+          content: readFileSync(full),
+        })
+      }
     }
   }
-  try {
-    walk(dir)
-  } catch {
-    // No public directory: nothing extra to precache.
-  }
+  walk(dir)
   return found
+}
+
+/**
+ * Identify the precached set by what is in it, not merely what it is called.
+ * Two builds differing only in the contents of a stably-named file must still
+ * produce different workers, or the second never reaches anyone.
+ */
+export function precacheVersion(entries: readonly Precached[]): string {
+  const hash = createHash('sha256')
+  for (const entry of [...entries].sort((a, b) => a.url.localeCompare(b.url))) {
+    hash.update(entry.url)
+    hash.update('\0')
+    hash.update(entry.content)
+    hash.update('\0')
+  }
+  return hash.digest('hex').slice(0, 12)
 }
 
 export function serviceWorker(): Plugin {
@@ -42,24 +74,28 @@ export function serviceWorker(): Plugin {
       root = config.root
     },
 
-    generateBundle(_options, bundle) {
-      const assets = Object.keys(bundle).map((file) => `/${file}`)
-      // '/' rather than '/index.html': that is the URL a navigation requests,
-      // and it is what the fetch handler looks up for the app shell.
-      const precache = ['/', ...assets, ...publicFiles(root)]
-        .filter((url) => url !== '/index.html' && url !== '/sw.js')
-        .sort()
+    // After everything has been written, so `index.html` and the files copied
+    // from `public/` are all on disk and can be read for real.
+    writeBundle(options) {
+      const dir = options.dir ?? join(root, 'dist')
 
-      const version = createHash('sha256')
-        .update(precache.join('\n'))
-        .digest('hex')
-        .slice(0, 12)
+      const entries = filesIn(dir)
+        .filter((entry) => entry.url !== '/sw.js')
+        // '/' rather than '/index.html': that is the URL a navigation
+        // requests, and what the fetch handler looks up for the app shell.
+        .map((entry) =>
+          entry.url === '/index.html' ? { ...entry, url: '/' } : entry,
+        )
 
-      this.emitFile({
-        type: 'asset',
-        fileName: 'sw.js',
-        source: render(version, precache),
-      })
+      if (!entries.some((entry) => entry.url === '/')) {
+        throw new Error(
+          'service worker: no app shell to precache — the app would not load offline',
+        )
+      }
+
+      const version = precacheVersion(entries)
+      const precache = entries.map((entry) => entry.url).sort()
+      writeFileSync(join(dir, 'sw.js'), render(version, precache))
     },
   }
 }
