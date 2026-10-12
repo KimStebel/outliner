@@ -124,8 +124,10 @@
     // Mouse drags inside a row are text selection, so leave them alone; swipe
     // is a touch gesture. Desktop deletes rows by other means.
     if (event.pointerType === 'mouse') return
-    // The gutter controls start a drag directly and must not also arm a swipe.
-    if (event.target instanceof Element && event.target.closest('.gutter')) return
+    // The fold and zoom controls start a drag directly and must not also arm
+    // a swipe.
+    if (event.target instanceof Element && event.target.closest('.fold, .dot'))
+      return
     // Dragging a selection handle also produces pointer events here.
     const selection = window.getSelection()
     if (selection !== null && !selection.isCollapsed) return
@@ -258,38 +260,37 @@
     class:dragging
     style="--depth: {depth}; transform: translateX({offset}px)"
   >
-    <span class="gutter">
-      {#if hasChildren}
-        <button
-          class="fold"
-          class:collapsed
-          onclick={() => ontoggle(id)}
-          onpointerdown={(event) => ondragstart(id, fromEvent(event))}
-          aria-expanded={!collapsed}
-          aria-label={collapsed ? 'Expand' : 'Collapse'}
-          tabindex="-1"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
-      {:else}
-        <span class="fold" aria-hidden="true"></span>
-      {/if}
-
-      <!-- The dot zooms in, the chevron folds. Separating them is what lets a
-           row be both foldable and drillable without one tap meaning two
-           different things. -->
+    {#if hasChildren}
       <button
-        class="dot"
+        class="fold"
         class:collapsed
-        onclick={() => onzoom(id)}
+        onclick={() => ontoggle(id)}
         onpointerdown={(event) => ondragstart(id, fromEvent(event))}
-        aria-label="Zoom in"
-        title="Zoom in"
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? 'Expand' : 'Collapse'}
         tabindex="-1"
-      ></button>
-    </span>
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+    {:else}
+      <span class="fold" aria-hidden="true"></span>
+    {/if}
+
+    <!-- The dot zooms in, the chevron folds. Separating them is what lets a
+         row be both foldable and drillable without one tap meaning two
+         different things. On touch they sit at opposite ends of the row, so
+         a thumb cannot catch the wrong one. -->
+    <button
+      class="dot"
+      class:collapsed
+      onclick={() => onzoom(id)}
+      onpointerdown={(event) => ondragstart(id, fromEvent(event))}
+      aria-label="Zoom in"
+      title="Zoom in"
+      tabindex="-1"
+    ></button>
 
     <div
       bind:this={el}
@@ -376,17 +377,12 @@
 
   /* Two fixed-width slots, so text starts at the same x whether or not the
      row has children. Both are drag handles. */
-  .gutter {
+  .fold,
+  .dot {
     flex: none;
-    display: flex;
-    align-items: flex-start;
     /* These own their gestures outright: panning from here is a drag, so the
        browser must not also scroll the list. */
     touch-action: none;
-  }
-
-  .fold,
-  .dot {
     position: relative;
     display: grid;
     place-items: center;
@@ -440,6 +436,23 @@
     height: 7px;
     border-radius: 50%;
     background: var(--bullet);
+  }
+
+  /* On touch the chevron moves to the far end of the row. Sitting next to the
+     zoom dot, a thumb catches the wrong one — and they do different things,
+     one folding in place and the other replacing the whole view. Only the
+     visual order changes; the DOM order stays as it reads. */
+  @media (pointer: coarse) {
+    .fold {
+      order: 3;
+      width: 22px;
+    }
+
+    button.fold::after {
+      /* Widened a little now that nothing sits beside it to collide with. */
+      left: -4px;
+      right: -4px;
+    }
   }
 
   .dot.collapsed::before {

@@ -200,7 +200,14 @@ async function longPressDrag(
 }
 
 async function clickRow(page, text) {
-  await page.locator('[data-item-id]', { hasText: text }).first().click()
+  const row = page.locator('[data-item-id]', { hasText: text }).first()
+  const box = await row.boundingBox()
+  // Past the end of the last line, rather than the element's centre. The
+  // centre can land on a link, where focus is suppressed by design so that
+  // tapping a URL does not raise the keyboard — leaving the row unfocused and
+  // every following assertion meaningless. This also puts the caret at the
+  // end of the text regardless of how the row wraps.
+  await row.click({ position: { x: box.width - 4, y: box.height - 4 } })
 }
 
 // A real sync backend, on a scratch directory of its own. Without it the app
@@ -422,18 +429,45 @@ check(
 )
 
 console.log('\narrow keys cross rows')
-await clickRow(page, 'Try it')
+// Chosen at runtime rather than named: which rows exist depends on what
+// earlier sections left behind, and which rows wrap depends on the layout.
+// In a wrapped row ArrowDown moves to the next visual line rather than the
+// next row — correct, but not what this is testing.
+const adjacentPair = await page.$$eval('[data-item-id]', (nodes) => {
+  const single = nodes.map((node) => {
+    const style = getComputedStyle(node)
+    const lineHeight = Number.parseFloat(style.lineHeight) || 24
+    return node.getBoundingClientRect().height < lineHeight * 1.5
+  })
+  for (let i = 1; i < nodes.length; i += 1) {
+    if (single[i] && single[i - 1]) {
+      return {
+        index: i,
+        above: nodes[i - 1].textContent,
+        here: nodes[i].textContent,
+      }
+    }
+  }
+  return null
+})
+check('found two adjacent rows that fit on one line', adjacentPair !== null)
+
+const pairTarget = page.locator('[data-item-id]').nth(adjacentPair.index)
+const pairBox = await pairTarget.boundingBox()
+await pairTarget.click({
+  position: { x: pairBox.width - 4, y: pairBox.height - 4 },
+})
 await page.keyboard.press('Home')
 await page.keyboard.press('ArrowUp')
 check(
   'arrow up moves to the previous visible row',
-  (await focusedRowText(page)) === 'Tap a bullet with children to fold it',
-  `got ${JSON.stringify(await focusedRowText(page))}`,
+  (await focusedRowText(page)) === adjacentPair.above,
+  `got ${JSON.stringify(await focusedRowText(page))}, wanted ${JSON.stringify(adjacentPair.above)}`,
 )
 await page.keyboard.press('ArrowDown')
 check(
   'arrow down comes back',
-  (await focusedRowText(page)) === 'Try it',
+  (await focusedRowText(page)) === adjacentPair.here,
   `got ${JSON.stringify(await focusedRowText(page))}`,
 )
 
@@ -1509,6 +1543,77 @@ check(
   (await outlineOf(page)).length === beforeShortcut + 3,
   `${beforeShortcut} -> ${(await outlineOf(page)).length}`,
 )
+
+console.log('\non touch the fold chevron sits away from the zoom dot')
+await resetDocument(page)
+const boxes = async (target) =>
+  target.evaluate(() => {
+    const row = [...document.querySelectorAll('.row')].find((r) =>
+      r.querySelector('button.fold'),
+    )
+    const box = (selector) => {
+      const el = row.querySelector(selector)
+      if (el === null) return null
+      const rect = el.getBoundingClientRect()
+      return { left: Math.round(rect.left), right: Math.round(rect.right) }
+    }
+    return {
+      fold: box('button.fold'),
+      dot: box('.dot'),
+      text: box('[data-item-id]'),
+    }
+  })
+
+const touch = await boxes(page)
+check(
+  'the chevron is past the end of the text',
+  touch.fold.left >= touch.text.right,
+  JSON.stringify(touch),
+)
+check('the dot stays at the start', touch.dot.right <= touch.text.left)
+// The whole point: a thumb aimed at one cannot land on the other.
+check(
+  'they are far apart',
+  touch.fold.left - touch.dot.right > 200,
+  `${touch.fold.left - touch.dot.right}px apart`,
+)
+check(
+  'and the chevron still folds from there',
+  await (async () => {
+    const before = (await outlineOf(page)).length
+    await page
+      .locator('.row', { hasText: 'Welcome' })
+      .first()
+      .locator('.fold')
+      .click()
+    await page.waitForTimeout(200)
+    const after = (await outlineOf(page)).length
+    await page
+      .locator('.row', { hasText: 'Welcome' })
+      .first()
+      .locator('.fold')
+      .click()
+    await page.waitForTimeout(200)
+    return after < before
+  })(),
+)
+
+console.log('\nwith a fine pointer it stays in the gutter')
+// Moving it would cost text width for no benefit where taps are precise.
+const desktop = await context
+  .browser()
+  .newContext({ viewport: { width: 900, height: 700 } })
+const desktopPage = await desktop.newPage()
+await desktopPage.goto(BASE)
+await desktopPage.waitForSelector('.row')
+const fine = await boxes(desktopPage)
+check(
+  'the chevron is before the text',
+  fine.fold.right <= fine.text.left,
+  JSON.stringify(fine),
+)
+check('and immediately beside the dot', fine.dot.left - fine.fold.right < 12)
+await desktop.close()
 
 console.log('\npersistence across reload')
 

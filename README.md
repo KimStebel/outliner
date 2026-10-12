@@ -363,6 +363,11 @@ arrive.
   and `[label](url)` stay as written — the URL inside the latter is still
   clickable. Task markers `[ ]` / `[x]` are kept as text, since there is no
   done state to map them onto yet.
+- **On touch the fold chevron sits at the far end of the row**, opposite the
+  zoom dot. Side by side a thumb catches the wrong one, and they do very
+  different things — one folds in place, the other replaces the whole view.
+  With a fine pointer it stays in the gutter, where taps are precise and the
+  row keeps the width.
 - **Tap a row's dot to zoom into it**: the view re-roots on that item, its
   children render at depth 0, and a breadcrumb trails back out. Escape zooms
   out one level. The fold chevron and the zoom dot are deliberately separate
