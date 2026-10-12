@@ -25,6 +25,10 @@ outliner.stebel.kim {
 	# leaves it alone.
 	handle /api/* {
 		import /etc/caddy/auth.caddy
+		# Note that `encode` above rewrites the ETag of anything it compresses,
+		# appending `-gzip`. The backend compares entity tags on the part that
+		# identifies the document, so a tag handed to a browser here is still
+		# accepted back in `If-Match` and `If-None-Match`.
 		reverse_proxy backend:8080
 	}
 

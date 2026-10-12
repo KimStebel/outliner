@@ -99,6 +99,13 @@ part of it.
 | `HEAD /api/doc` | The same headers, no body. For polling.                       |
 | `PUT /api/doc`  | Replace the document. `204` with the new `ETag`.              |
 
+Entity tags are compared on the part that identifies the document, ignoring a
+content-coding suffix. Caddy compresses responses and correctly rewrites the
+ETag when it does — `"<hash>-gzip"` — and the browser sends that back. Compared
+literally it never matches, so every write is refused as stale _and_ every poll
+re-downloads the whole document instead of getting a 304. That cost a day of
+desktop edits before it was found.
+
 `If-None-Match` on GET/HEAD gives `304`. The ETag is a SHA-256 of the stored
 bytes, not an mtime, so a change in the same second as the last poll is still
 visible.
@@ -133,6 +140,9 @@ shows the result.
   keystroke. The page being hidden flushes immediately.
 - The server is polled every **10 seconds** while the tab is in the foreground,
   and once more the moment it returns. Hidden tabs do not poll.
+- The "Updated" notice is **transient**: it clears when the user edits again
+  or when a save succeeds. Left sticky it reported "Updated" over a document
+  that had just been saved, which reads as though the edit went nowhere.
 - **The server wins a conflict.** A refused upload means the local copy is
   replaced. The displaced version is kept at `outliner:replaced-backup` in
   localStorage — one copy, as a way back from a surprise, not a history.
@@ -146,6 +156,12 @@ The flush on hide is a plain `fetch`, deliberately not `keepalive`: keepalive
 bodies are capped at 64KB, which this document can exceed, so it would fail
 exactly when it matters. If the page dies before the request completes nothing
 is lost — the edit is in localStorage and uploads on next launch.
+
+A local edit made _while_ a reconcile request is in flight is discarded when
+that request turns out to carry a newer document — server-wins applies to it
+like any other. The displaced copy goes to `outliner:replaced-backup`. The
+window is a few hundred milliseconds, and polls do not run while there are
+unsaved edits, so this needs an edit landing inside the request itself.
 
 **First sync is the one dangerous moment.** Server-wins means the first device
 to upload defines the document, and any other device then adopts it, discarding

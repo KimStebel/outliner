@@ -2,15 +2,27 @@
 #
 # Exercise the deployed sync API end to end.
 #
-# Reads credentials from ./prod-basic-auth. Leaves the stored document as it
-# found it, so it is safe to run against production.
+# Reads credentials from ./prod-basic-auth.
 #
-# Usage: ./scripts/smoke-api.sh [base-url]
+# This test WRITES to the document store. It refuses to run when the store
+# already holds something, because a restore that silently fails leaves the
+# real document replaced by a test fixture — which is exactly what happened
+# once. Pass --allow-overwrite only against a store you do not care about.
+#
+# Usage: ./scripts/smoke-api.sh [base-url] [--allow-overwrite]
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-BASE=${1:-https://outliner.stebel.kim}
+BASE=https://outliner.stebel.kim
+ALLOW_OVERWRITE=0
+for arg in "$@"; do
+  case $arg in
+    --allow-overwrite) ALLOW_OVERWRITE=1 ;;
+    http*) BASE=$arg ;;
+    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
 API="$BASE/api/doc"
 AUTH=$(cat prod-basic-auth)
 
@@ -40,10 +52,19 @@ check "the static site needs no auth" "$(status "$BASE/")" "200"
 
 echo
 echo "round trip"
-# Preserve whatever is live so this can run against production.
+# Preserve whatever is live. `--compressed` matters: without it curl writes
+# the gzip bytes, and restoring those later is not valid JSON, so the restore
+# fails and the real document stays replaced.
 original=$(mktemp)
 trap 'rm -f "$original"' EXIT
-existing=$(status -u "$AUTH" -o "$original" "$API")
+existing=$(curl -s -o "$original" -w '%{http_code}' --compressed -u "$AUTH" "$API")
+
+if [[ $existing == "200" && $ALLOW_OVERWRITE != "1" ]]; then
+  echo "  --   the store holds a document ($(wc -c <"$original") bytes)."
+  echo "       This test overwrites it. Re-run with --allow-overwrite if that"
+  echo "       document is expendable."
+  exit 2
+fi
 
 # An array, so the header survives as one argument — and keyed off the status
 # code being 200, not merely non-empty: "404" is a non-empty string too.
@@ -53,7 +74,11 @@ else
   precondition=()
 fi
 
-payload='{"version":1,"doc":{"rootId":"root","items":{"root":{"id":"root","text":"","parent":null,"children":[],"collapsed":false}}},"smoke":true}'
+# Padded past Caddy's minimum compression length. The ETag bug this guards
+# against only appears on responses the proxy actually compresses, so a
+# fixture small enough to be sent verbatim would never catch it.
+filler=$(printf 'x%.0s' $(seq 1 1200))
+payload="{\"version\":1,\"doc\":{\"rootId\":\"root\",\"items\":{\"root\":{\"id\":\"root\",\"text\":\"\",\"parent\":null,\"children\":[],\"collapsed\":false}}},\"smoke\":\"$filler\"}"
 headers=$(curl -s -D- -o /dev/null -u "$AUTH" -X PUT \
   -H 'Content-Type: application/json' \
   "${precondition[@]}" \
@@ -89,6 +114,27 @@ check "an overwrite from a stale version is refused" "$code" "412"
 check "and the document is untouched" "$(curl -s -u "$AUTH" "$API")" "$payload"
 
 echo
+echo "the ETag a browser is given is one the server will accept"
+# The proxy compresses, which rewrites the ETag. Both conditional paths must
+# still work with the rewritten tag, or writes are refused as stale and polls
+# re-download the whole document instead of getting a 304.
+zipped=$(curl -s -D- -o /dev/null -u "$AUTH" -H 'Accept-Encoding: gzip' "$API")
+check "responses are compressed" "$(header_of content-encoding "$zipped")" "gzip"
+browser_tag=$(header_of etag "$zipped")
+check "and the tag is the rewritten one" \
+  "$([[ $browser_tag == *-gzip* ]] && echo yes)" "yes"
+code=$(status -u "$AUTH" --compressed -H "If-None-Match: $browser_tag" "$API")
+check "a conditional read with it gets 304" "$code" "304"
+roundtrip=$(mktemp)
+browser_etag=$(curl -s -D- -o "$roundtrip" -u "$AUTH" --compressed "$API" |
+  grep -i '^etag:' | tr -d '\r' | cut -d' ' -f2-)
+code=$(status -u "$AUTH" -X PUT -H "If-Match: $browser_etag" \
+  -H 'Content-Type: application/json' --data-binary "@$roundtrip" "$API")
+rm -f "$roundtrip"
+check "a write using it is accepted" "$code" "204"
+etag=$(header_of etag "$(curl -s -D- -o /dev/null -u "$AUTH" -I "$API")")
+
+echo
 echo "input validation"
 code=$(status -u "$AUTH" -X PUT -H "If-Match: $etag" --data 'not json' "$API")
 check "junk is rejected" "$code" "400"
@@ -102,9 +148,18 @@ if [[ $existing == "200" ]]; then
   current=$(curl -s -D- -o /dev/null -u "$AUTH" -I "$API")
   code=$(status -u "$AUTH" -X PUT -H "If-Match: $(header_of etag "$current")" \
     -H 'Content-Type: application/json' --data-binary "@$original" "$API")
-  check "the document that was there before is back" "$code" "204"
+  check "the restore was accepted" "$code" "204"
+  # Verify rather than assume: a restore that fails silently is how a real
+  # document gets left replaced by a test fixture.
+  check "and the document really is byte-for-byte what it was" \
+    "$(curl -s --compressed -u "$AUTH" "$API" | cksum)" "$(cksum <"$original")"
 else
-  echo "  --   nothing was stored before this run; leaving the smoke document"
+  echo "  --   nothing was stored before this run; clearing the smoke document"
+  current=$(curl -s -D- -o /dev/null -u "$AUTH" -I "$API")
+  status -u "$AUTH" -X PUT -H "If-Match: $(header_of etag "$current")" \
+    -H 'Content-Type: application/json' \
+    --data '{"version":1,"doc":{"rootId":"root","items":{"root":{"id":"root","text":"","parent":null,"children":[],"collapsed":false}}}}' \
+    "$API" >/dev/null
 fi
 
 echo

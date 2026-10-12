@@ -338,3 +338,45 @@ describe('folding everything at once', () => {
     expect(store.undoDepth).toBe(0)
   })
 })
+
+describe('adopting a document from elsewhere', () => {
+  it('replaces the contents in place', () => {
+    const store = makeStore('a\nb')
+    store.replaceAll(
+      docFromOutline(outline`
+      x
+        y
+    `),
+    )
+    expect(outlineOf(store.doc)).toBe('x\n  y')
+    expect(validateDoc(store.doc)).toEqual([])
+  })
+
+  it('discards the undo history', () => {
+    // Undoing across a wholesale replacement would interleave two unrelated
+    // documents, which is not something a user could reason about.
+    const store = makeStore('a\nb')
+    store.indent('i2')
+    expect(store.canUndo).toBe(true)
+
+    store.replaceAll(docFromOutline('x'))
+    expect(store.canUndo).toBe(false)
+    expect(store.canRedo).toBe(false)
+  })
+
+  it('leaves a typeable row when the incoming document is empty', () => {
+    // A server copy with no items would otherwise render nothing at all, and
+    // rows are the only way to add one.
+    const store = makeStore('a\nb')
+    store.replaceAll(docFromOutline(''))
+    expect(store.rows()).toHaveLength(1)
+    expect(store.textOf(store.rows()[0]?.id ?? '')).toBe('')
+    expect(validateDoc(store.doc)).toEqual([])
+  })
+
+  it('puts the caret on the first row of the new document', () => {
+    const store = makeStore('a')
+    store.replaceAll(docFromOutline('x\ny'))
+    expect(store.caret).toEqual({ id: store.rows()[0]?.id, offset: 0 })
+  })
+})

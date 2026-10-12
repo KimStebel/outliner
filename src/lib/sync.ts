@@ -134,6 +134,10 @@ export class SyncEngine {
   /** Call on every local edit. */
   markDirty(): void {
     this.dirty = true
+    // "Your document was replaced" stops being the salient fact the moment
+    // the user edits again; leaving it up would then contradict the save
+    // that follows.
+    this.replaced = false
     if (!this.inFlight) this.emit({ state: 'pending' })
     this.clearTimer('save')
     this.saveTimer = setTimeout(() => {
@@ -257,6 +261,9 @@ export class SyncEngine {
       case 'stored': {
         this.failures = 0
         this.setEtag(result.etag)
+        // What is on the server is now this device's own document, so any
+        // earlier replacement notice no longer describes anything.
+        this.replaced = false
         if (this.dirty || this.resaveQueued) {
           this.resaveQueued = false
           // Re-arm the quiet period rather than uploading at once: edits

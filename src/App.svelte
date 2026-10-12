@@ -150,6 +150,8 @@
 
   function readEtag(): string | null {
     try {
+      // A tag rewritten by the compressing proxy is fine to store as-is:
+      // the server compares tags on the part that identifies the document.
       return window.localStorage.getItem(ETAG_KEY)
     } catch {
       return null

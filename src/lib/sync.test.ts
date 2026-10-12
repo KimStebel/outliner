@@ -402,3 +402,28 @@ describe('failure', () => {
     expect(h.transport.putCalls).toHaveLength(after)
   })
 })
+
+describe('the replacement notice', () => {
+  it('clears once the user edits again', async () => {
+    const h = setup({ initialEtag: '"v1"' })
+    h.transport.loads.push({ kind: 'document', body: 'remote', etag: '"v2"' })
+    await h.engine.start()
+    expect(h.engine.current.replacedFromServer).toBe(true)
+
+    h.engine.markDirty()
+    expect(h.engine.current.replacedFromServer).toBe(false)
+  })
+
+  it('does not outlive a successful save', async () => {
+    // Otherwise a saved document keeps reporting "Updated", which reads as
+    // though the edit went nowhere.
+    const h = setup({ initialEtag: '"v1"' })
+    h.transport.loads.push({ kind: 'document', body: 'remote', etag: '"v2"' })
+    await h.engine.start()
+
+    h.engine.markDirty()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(h.engine.current.replacedFromServer).toBe(false)
+    expect(h.state).toBe('idle')
+  })
+})

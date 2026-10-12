@@ -7,7 +7,7 @@
  */
 
 import type { Caret, Doc, ItemId, Row } from './model'
-import { cloneItem, createDoc, findItem, visibleRows } from './model'
+import { cloneItem, createDoc, createItem, findItem, visibleRows } from './model'
 import { countNodes, parseMarkdown } from './markdown'
 import type { Change } from './tx'
 import { Tx, mergeChanges, reapply, revert } from './tx'
@@ -246,6 +246,16 @@ export class DocStore {
     for (const id of Object.keys(items)) delete items[id]
     for (const [id, item] of Object.entries(next.items)) items[id] = cloneItem(item)
     this.doc.rootId = next.rootId
+
+    // Hold the same invariant the ops layer keeps: a document with no items
+    // renders no rows, and rows are the only way to add one, so adopting one
+    // would leave nothing to type into and no way out.
+    const root = items[next.rootId]
+    if (root !== undefined && root.children.length === 0) {
+      const first = createItem(this.ctx.newId(), next.rootId, '')
+      items[first.id] = first
+      root.children.push(first.id)
+    }
 
     this.past = []
     this.future = []

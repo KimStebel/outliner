@@ -85,6 +85,13 @@ sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
 
 echo "==> Building and starting"
 sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
-  "cd $REMOTE_DIR && docker compose up -d --build && docker compose ps"
+  "cd $REMOTE_DIR && docker compose up -d --build"
+
+# The Caddyfile is a bind mount, so changing it does not change the container
+# and `up -d` leaves it running with the old config. Without this, a config
+# change silently does not take effect.
+echo "==> Reloading Caddy config"
+sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
+  "cd $REMOTE_DIR && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>&1 | tail -1 && docker compose ps"
 
 echo "==> Done. https://outliner.stebel.kim"

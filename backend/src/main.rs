@@ -240,13 +240,39 @@ fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
+/// Content codings a proxy may have applied, and named in the entity tag.
+const CODINGS: [&str; 5] = ["gzip", "br", "zstd", "deflate", "compress"];
+
+/// The identity of the stored document, whatever representation a tag names.
+///
+/// A proxy that compresses a response must change its entity tag, because the
+/// compressed body is a different representation — Caddy appends `-gzip` and
+/// friends. The client then sends that tag straight back in `If-Match` or
+/// `If-None-Match`, and a literal comparison against the identity tag misses
+/// every time: writes get refused as stale, and conditional reads never get a
+/// 304 so the whole document is re-sent on every poll.
+///
+/// All those tags name the same stored bytes, so comparison happens on the
+/// part that identifies them.
+fn core(tag: &str) -> &str {
+    let inner = tag.trim().trim_start_matches("W/").trim_matches('"');
+    for coding in CODINGS {
+        if let Some(base) = inner.strip_suffix(coding) {
+            if let Some(base) = base.strip_suffix('-') {
+                return base;
+            }
+        }
+    }
+    inner
+}
+
 /// `If-Match` / `If-None-Match` hold a comma-separated list, `*`, or weak tags.
 fn etag_matches(candidates: &str, current: &str) -> bool {
-    candidates.split(',').map(str::trim).any(|candidate| {
-        candidate == "*"
-            || candidate == current
-            || candidate.strip_prefix("W/").is_some_and(|tag| tag == current)
-    })
+    let wanted = core(current);
+    candidates
+        .split(',')
+        .map(str::trim)
+        .any(|candidate| candidate == "*" || core(candidate) == wanted)
 }
 
 fn etag_of(bytes: &[u8]) -> String {
@@ -564,5 +590,39 @@ mod tests {
         assert!(etag_matches("W/\"abc\"", "\"abc\""));
         assert!(!etag_matches("\"zzz\"", "\"abc\""));
         assert!(!etag_matches("", "\"abc\""));
+    }
+
+    #[test]
+    fn a_tag_rewritten_by_a_compressing_proxy_still_matches() {
+        // What a browser is handed when the proxy gzips the response. Without
+        // this, every write from that browser is refused as stale and every
+        // poll re-downloads the whole document.
+        assert!(etag_matches("\"abc-gzip\"", "\"abc\""));
+        assert!(etag_matches("\"abc-br\"", "\"abc\""));
+        assert!(etag_matches("\"abc-zstd\"", "\"abc\""));
+        assert!(etag_matches("W/\"abc-gzip\"", "\"abc\""));
+        assert!(etag_matches("\"zzz\", \"abc-gzip\"", "\"abc\""));
+        // A different document is still a different document.
+        assert!(!etag_matches("\"zzz-gzip\"", "\"abc\""));
+    }
+
+    #[tokio::test]
+    async fn a_write_conditioned_on_a_compressed_tag_is_accepted() {
+        let h = harness();
+        let etag = etag_of_response(&send(&h, put_request(r#"{"v":1}"#, None)).await);
+        let compressed = format!("{}-gzip\"", etag.trim_end_matches('"'));
+
+        let response = send(&h, put_request(r#"{"v":2}"#, Some(&compressed))).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn a_read_conditioned_on_a_compressed_tag_is_not_modified() {
+        let h = harness();
+        let etag = etag_of_response(&send(&h, put_request(r#"{"v":1}"#, None)).await);
+        let compressed = format!("{}-gzip\"", etag.trim_end_matches('"'));
+
+        let response = send(&h, get_request(Some(&compressed))).await;
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
     }
 }
