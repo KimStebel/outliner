@@ -1,5 +1,6 @@
 #Secrets
 prod-env
+prod-basic-auth
 
 # Logs
 logs
