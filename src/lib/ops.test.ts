@@ -4,6 +4,7 @@ import { getItem } from './model'
 import { createSequentialIds } from './id'
 import type { OpContext } from './ops'
 import {
+  duplicateSubtree,
   ensureNonEmpty,
   indentItem,
   mergeWithPrevious,
@@ -650,3 +651,94 @@ const SAMPLE_OUTLINE = outline`
     b
   c
 `
+
+describe('duplicateSubtree', () => {
+  it('places the copy directly after the original', () => {
+    const r = apply('a\nb', (tx, ctx, doc) =>
+      duplicateSubtree(tx, ctx, idOf(doc, 'a')),
+    )
+    expect(r.after).toBe('a\na\nb')
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('copies the children too, after the original’s own subtree', () => {
+    const r = apply(
+      outline`
+        a
+          x
+            y
+        b
+      `,
+      (tx, ctx, doc) => duplicateSubtree(tx, ctx, idOf(doc, 'a')),
+    )
+    expect(r.after).toBe('a\n  x\n    y\na\n  x\n    y\nb')
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('gives every copied item a new id', () => {
+    // Sharing an id would make editing one change the other.
+    const r = apply(
+      outline`
+        a
+          x
+      `,
+      (tx, ctx, doc) => duplicateSubtree(tx, ctx, idOf(doc, 'a')),
+    )
+    const ids = Object.keys(r.doc.items)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids).toHaveLength(5) // root, a, x, and the two copies
+  })
+
+  it('leaves the original untouched', () => {
+    const r = apply(
+      outline`
+        a
+          x
+      `,
+      (tx, ctx, doc) => duplicateSubtree(tx, ctx, idOf(doc, 'a')),
+    )
+    expect(getItem(r.doc, 'i1').text).toBe('a')
+    expect(getItem(r.doc, 'i1').children).toEqual(['i2'])
+  })
+
+  it('copies fold state, so duplicating a folded branch stays folded', () => {
+    const r = apply(
+      outline`
+        > a
+          x
+      `,
+      (tx, ctx, doc) => duplicateSubtree(tx, ctx, idOf(doc, 'a')),
+    )
+    expect(r.after).toBe('> a\n  x\n> a\n  x')
+    expect(visibleOutlineOf(r.doc)).toBe('a\na')
+  })
+
+  it('duplicates a nested item within its own parent', () => {
+    const r = apply(
+      outline`
+        p
+          a
+          b
+      `,
+      (tx, ctx, doc) => duplicateSubtree(tx, ctx, idOf(doc, 'a')),
+    )
+    expect(r.after).toBe('p\n  a\n  a\n  b')
+    expect(r.undo()).toBe(r.before)
+  })
+
+  it('puts the caret on the copy, ready to edit it', () => {
+    const r = apply('hello', (tx, ctx, doc) =>
+      duplicateSubtree(tx, ctx, idOf(doc, 'hello')),
+    )
+    expect(r.caret).toEqual({ id: 'n1', offset: 5 })
+  })
+
+  it('refuses to duplicate the root', () => {
+    const doc = docFromOutline('a')
+    const tx = new Tx(doc)
+    expect(
+      duplicateSubtree(tx, { newId: createSequentialIds('n') }, doc.rootId),
+    ).toBeNull()
+    expect(tx.collect()).toEqual([])
+  })
+})

@@ -235,6 +235,10 @@
     runOnActive((id) => store.indent(id))
   }
 
+  function duplicateActive(): void {
+    runOnActive((id) => store.duplicate(id))
+  }
+
   function outdentActive(): void {
     runOnActive((id) => {
       if (findItem(store.doc, id)?.parent !== zoomRootId) store.outdent(id)
@@ -682,6 +686,16 @@
       handleDelete(id, true)
       return
     }
+    if (key === 'd') {
+      // The keyboard bar only appears on touch, so without this there is no
+      // way to duplicate on a desktop. Overrides the browser's bookmark
+      // shortcut, as text editors conventionally do.
+      event.preventDefault()
+      syncText(id, el)
+      store.duplicate(id)
+      void afterEdit()
+      return
+    }
     if (key === 'b' || key === 'i' || key === 'u') {
       // These would inject <b>/<i>/<u> in the `true` fallback mode.
       event.preventDefault()
@@ -743,6 +757,7 @@
       {canOutdent}
       onindent={indentActive}
       onoutdent={outdentActive}
+      onduplicate={duplicateActive}
     />
   {/if}
 </Dock>

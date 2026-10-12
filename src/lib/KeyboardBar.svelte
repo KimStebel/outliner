@@ -11,9 +11,10 @@
     canOutdent: boolean
     onindent: () => void
     onoutdent: () => void
+    onduplicate: () => void
   }
 
-  let { canIndent, canOutdent, onindent, onoutdent }: Props = $props()
+  let { canIndent, canOutdent, onindent, onoutdent, onduplicate }: Props = $props()
 
   /**
    * Act on pointerdown, with the default suppressed.
@@ -69,6 +70,21 @@
       <path d="M3 9l3 3-3 3" />
     </svg>
   </button>
+
+  <button
+    type="button"
+    class="apart"
+    tabindex="-1"
+    aria-label="Duplicate"
+    title="Duplicate this item and its children"
+    onpointerdown={(event) => press(event, onduplicate)}
+    onclick={() => activate(onduplicate)}
+  >
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V5a2 2 0 0 1 2-2h8" />
+    </svg>
+  </button>
 </div>
 
 <style>
@@ -93,6 +109,11 @@
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 0.625rem;
+  }
+
+  /* Set apart from the indent pair, which belong together. */
+  .apart {
+    margin-left: 0.75rem;
   }
 
   button:disabled {

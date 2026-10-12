@@ -193,6 +193,45 @@ export function insertAfter(tx: Tx, ctx: OpContext, id: ItemId): Caret {
   return { id: sibling.id, offset: 0 }
 }
 
+/**
+ * Copy an item and everything under it, placing the copy directly after the
+ * original — so in the flattened view the original's subtree is followed by
+ * the copy's.
+ *
+ * Every copied item gets a fresh id; nothing is shared with the original, so
+ * editing one does not touch the other. Fold state is copied too: a duplicate
+ * of a folded branch arrives folded, which is what keeps a long list readable
+ * when you duplicate a big subtree.
+ */
+export function duplicateSubtree(tx: Tx, ctx: OpContext, id: ItemId): Caret | null {
+  const item = tx.get(id)
+  if (item.parent === null) return null
+  const parentId = item.parent
+
+  // Children are created first so the copy can be inserted complete. Its own
+  // id is allocated up front, since they need it as their parent.
+  const copy = (sourceId: ItemId, newParent: ItemId): ItemId => {
+    const source = tx.get(sourceId)
+    const cloneId = ctx.newId()
+    const children = source.children.map((childId) => copy(childId, cloneId))
+
+    const clone = createItem(cloneId, newParent, source.text)
+    clone.collapsed = source.collapsed
+    clone.children = children
+    tx.insert(clone)
+    return cloneId
+  }
+
+  const duplicateId = copy(id, parentId)
+  tx.update(parentId, (parent) => {
+    parent.children.splice(parent.children.indexOf(id) + 1, 0, duplicateId)
+  })
+
+  // The caret lands on the copy: duplicating is nearly always the first half
+  // of editing the copy.
+  return { id: duplicateId, offset: item.text.length }
+}
+
 function insertSiblingAt(
   tx: Tx,
   sibling: ReturnType<typeof createItem>,

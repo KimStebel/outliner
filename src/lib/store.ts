@@ -138,6 +138,11 @@ export class DocStore {
     this.transact('insert', (tx) => ops.insertAfter(tx, this.ctx, id))
   }
 
+  /** Copy an item and its children, placing the copy just after it. */
+  duplicate(id: ItemId): void {
+    this.transact('duplicate', (tx) => ops.duplicateSubtree(tx, this.ctx, id))
+  }
+
   indent(id: ItemId): void {
     this.transact('indent', (tx) => ops.indentItem(tx, id))
   }

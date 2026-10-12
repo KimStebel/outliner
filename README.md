@@ -386,6 +386,11 @@ arrive.
   phone keyboard has no Tab key, so there is no other way to nest. It shows
   whenever a row is focused on a touch device, and its buttons disable
   themselves when the operation would be a no-op.
+- **Duplicate** copies a row and everything under it, placing the copy
+  directly after the original, with the caret on the copy — duplicating is
+  nearly always the first half of editing the copy. Fold state is copied too,
+  so duplicating a folded branch does not suddenly unfold a screenful.
+  Ctrl/Cmd-D does the same from a keyboard, since the bar is touch-only.
 - **Swipe a row right to delete it and its children.** The gesture locks
   direction after 8px and only claims clearly rightward travel, so vertical
   scrolling is untouched; it commits past 35% of the row's width. Mouse drags

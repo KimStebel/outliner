@@ -1464,6 +1464,52 @@ check(
 )
 await second.close()
 
+console.log('\nduplicate from the keyboard bar')
+await resetDocument(page)
+await clickRow(page, 'Welcome')
+await page.waitForTimeout(100)
+const beforeDuplicate = await outlineOf(page)
+await page.locator('.bar button[aria-label="Duplicate"]').tap()
+await page.waitForTimeout(150)
+const afterDuplicate = await outlineOf(page)
+equal(
+  'the item and its children are copied in directly after it',
+  afterDuplicate.slice(0, 10),
+  [...beforeDuplicate.slice(0, 5), ...beforeDuplicate.slice(0, 5)],
+)
+check(
+  'the caret moves to the copy, ready to edit it',
+  (await focusedRowText(page)) === 'Welcome',
+  JSON.stringify(await focusedRowText(page)),
+)
+await page.keyboard.type(' COPY')
+const edited = await outlineOf(page)
+check(
+  'editing the copy leaves the original alone',
+  edited.filter((row) => row.trimStart() === 'Welcome').length === 1 &&
+    edited.some((row) => row.includes('Welcome COPY')),
+  JSON.stringify(edited.slice(0, 7)),
+)
+
+console.log('\nduplicating is a single undo step')
+await page.locator('header button', { hasText: 'Undo' }).click()
+await page.waitForTimeout(100)
+await page.locator('header button', { hasText: 'Undo' }).click()
+await page.waitForTimeout(100)
+equal('one undo removes the whole copy', await outlineOf(page), beforeDuplicate)
+
+console.log('\nctrl-d duplicates from a keyboard')
+// The bar only appears on touch, so without this there is no way on desktop.
+await clickRow(page, 'Try it')
+const beforeShortcut = (await outlineOf(page)).length
+await page.keyboard.press('Control+d')
+await page.waitForTimeout(150)
+check(
+  'the subtree is duplicated',
+  (await outlineOf(page)).length === beforeShortcut + 3,
+  `${beforeShortcut} -> ${(await outlineOf(page)).length}`,
+)
+
 console.log('\npersistence across reload')
 
 const beforeReload = await outlineOf(page)
