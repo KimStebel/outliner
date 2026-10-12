@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "loaded {} bytes from {}, etag {}",
             doc.bytes.len(),
             dir.join(DOC_FILE).display(),
-            doc.etag
+            short(&doc.etag)
         )),
         None => log(&format!("no document yet in {}", dir.display())),
     }
@@ -140,11 +140,13 @@ async fn put_doc(
     body: Bytes,
 ) -> Response {
     if body.is_empty() {
+        log("refused a write: empty body");
         return (StatusCode::BAD_REQUEST, "empty body").into_response();
     }
     // Not a schema check — just a refusal to persist something that is not
     // even JSON, which would otherwise be handed back to every client.
     if serde_json::from_slice::<serde_json::Value>(&body).is_err() {
+        log(&format!("refused a write of {} bytes: not JSON", body.len()));
         return (StatusCode::BAD_REQUEST, "body is not valid JSON").into_response();
     }
 
@@ -154,6 +156,11 @@ async fn put_doc(
     match (guard.as_ref(), if_match) {
         // An overwrite has to name the version it replaces.
         (Some(current), None) => {
+            log(&format!(
+                "refused a write of {} bytes: no If-Match, holding {}",
+                body.len(),
+                short(&current.etag),
+            ));
             return (
                 StatusCode::PRECONDITION_REQUIRED,
                 meta_headers(current),
@@ -163,6 +170,14 @@ async fn put_doc(
         }
         (Some(current), Some(candidates)) => {
             if !etag_matches(candidates, &current.etag) {
+                // Worth recording: this is the moment two devices diverged,
+                // and the one that lost is about to have its copy replaced.
+                log(&format!(
+                    "refused a write of {} bytes: client had {}, holding {}",
+                    body.len(),
+                    short(candidates),
+                    short(&current.etag),
+                ));
                 // The caller is working from a document that is no longer
                 // current. Hand back the live metadata so it can refetch.
                 return (
@@ -174,7 +189,12 @@ async fn put_doc(
             }
         }
         // Nothing stored, but the caller believes otherwise.
-        (None, Some(_)) => {
+        (None, Some(candidates)) => {
+            log(&format!(
+                "refused a write of {} bytes: client had {}, holding nothing",
+                body.len(),
+                short(candidates),
+            ));
             return (StatusCode::PRECONDITION_FAILED, "no document stored yet")
                 .into_response();
         }
@@ -208,7 +228,7 @@ async fn put_doc(
     log(&format!(
         "stored {} bytes, etag {}",
         stored.bytes.len(),
-        stored.etag
+        short(&stored.etag)
     ));
     let meta = meta_headers(&stored);
     *guard = Some(stored);
@@ -273,6 +293,13 @@ fn etag_matches(candidates: &str, current: &str) -> bool {
         .split(',')
         .map(str::trim)
         .any(|candidate| candidate == "*" || core(candidate) == wanted)
+}
+
+/// Enough of an entity tag to tell two apart in a log line, without filling
+/// it with sixty-four hex characters.
+fn short(etag: &str) -> &str {
+    let trimmed = etag.trim().trim_start_matches("W/").trim_matches('"');
+    trimmed.get(..12).unwrap_or(trimmed)
 }
 
 fn etag_of(bytes: &[u8]) -> String {
@@ -580,6 +607,15 @@ mod tests {
         let h = harness();
         send(&h, put_request(r#"{"v":1}"#, None)).await;
         assert!(!h.state.dir.join(TMP_FILE).exists());
+    }
+
+    #[test]
+    fn a_short_tag_stays_readable_and_distinguishing() {
+        assert_eq!(short("\"0123456789abcdef\""), "0123456789ab");
+        assert_eq!(short("W/\"0123456789abcdef\""), "0123456789ab");
+        // Short or odd values must not panic on slicing.
+        assert_eq!(short("\"abc\""), "abc");
+        assert_eq!(short(""), "");
     }
 
     #[test]

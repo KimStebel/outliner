@@ -124,6 +124,12 @@ has no authentication of its own, so exposing its port would expose the
 document. Credentials live in `prod-basic-auth` (gitignored) and are hashed
 locally at deploy time, so the plaintext never reaches the server.
 
+Reads are not logged — polling every ten seconds would bury everything else —
+but every write is, successful or refused. A refusal is the interesting one:
+it is the moment two devices diverged, and the losing one is about to have its
+copy replaced. The line records what the client offered against what the
+server held, so "did I lose an edit?" has an answer.
+
 Writes are atomic: temp file, `fsync`, rename, `fsync` the directory, keeping
 the displaced copy as `doc.json.bak`. A crash mid-write cannot leave a
 truncated document, which would otherwise be pulled over a client's good local
