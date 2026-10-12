@@ -36,8 +36,7 @@ npm install
 | `npm run e2e`          | Build, then drive the app in a real browser |
 | `npm run icons`        | Regenerate the app icons into `public/`     |
 | `npm run deploy`       | Build and push to the production server     |
-| `npm run smoke`        | Check the deployed site actually works      |
-| `npm run smoke:api`    | Check the deployed sync API                 |
+| `npm run smoke`        | Check a deployment landed (read-only)       |
 | `npm run test:watch`   | Unit tests in watch mode                    |
 | `npm run check`        | Typecheck (`svelte-check` + `tsc`)          |
 | `npm run format`       | Format in place                             |
@@ -204,6 +203,36 @@ ip: <address>
 user: <user>
 password: <password>
 ```
+
+## Testing
+
+Three layers, each against something it owns:
+
+| Layer                     | Against                                  | Writes to           |
+| ------------------------- | ---------------------------------------- | ------------------- |
+| `cargo test` / `npm test` | nothing — pure logic and a temp dir      | nothing             |
+| `npm run e2e`             | a preview server and a backend it starts | its own scratch dir |
+| `npm run smoke`           | the real deployment                      | **nothing**         |
+
+`npm run e2e` starts a real sync backend on a temporary directory, so the 147
+checks run against working sync rather than a dead endpoint — including an
+edit reaching the server, a second client picking it up, and a stale write
+being refused and resolved in the server's favour.
+
+`npm run smoke` answers one question: _did the deployment land?_ The right
+build, a valid certificate, the headers, auth enforced on the API and absent
+on the site, the service worker, offline. Behaviour is not its job.
+
+**It writes nothing, and proves it.** Writes are blocked at the network layer,
+and the stored document's ETag is compared before and after. This matters
+because an earlier version of this suite ran the full behaviour test against
+production and destroyed the document it was meant to be checking — the
+behaviour it tested was already covered by `cargo test`, so the risk bought
+nothing.
+
+The build-identity check is the one that earns the suite its keep: "the deploy
+silently did not take effect" has happened twice here, once from a file
+watcher that saw nothing and once from a Caddy that was never reloaded.
 
 ## Architecture
 

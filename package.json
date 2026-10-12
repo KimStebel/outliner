@@ -15,8 +15,7 @@
     "e2e": "npm run build && node scripts/e2e.mjs",
     "icons": "node scripts/make-icons.mjs",
     "deploy": "./scripts/deploy.sh",
-    "smoke": "node scripts/smoke-prod.mjs",
-    "smoke:api": "./scripts/smoke-api.sh"
+    "smoke": "npm run build && node scripts/smoke-prod.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

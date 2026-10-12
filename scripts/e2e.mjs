@@ -10,6 +10,9 @@
  */
 
 import { spawn } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { chromium } from 'playwright'
 
 const PORT = 4173
@@ -147,7 +150,12 @@ async function dragRow(page, rowText, { dy = 0, dx = 0 }) {
  * lets the old document reappear after the reload.
  */
 async function resetDocument(page) {
+  // Let any debounced write land first, so it cannot arrive after the reset
+  // and repopulate the store.
   await page.waitForTimeout(600)
+  // Both sides: clearing only the browser would leave the client adopting
+  // the previous test's document from the server on reload.
+  await resetBackend()
   await page.evaluate(() => localStorage.clear())
   await page.reload()
   await page.waitForSelector('.row')
@@ -195,6 +203,66 @@ async function clickRow(page, text) {
   await page.locator('[data-item-id]', { hasText: text }).first().click()
 }
 
+// A real sync backend, on a scratch directory of its own. Without it the app
+// under test would be permanently failing to sync, which is not the state
+// anyone actually uses it in — and nothing would exercise the client against
+// the real protocol.
+const BACKEND = 'backend/target/release/outliner-sync'
+const BACKEND_PORT = 8787
+let backendDir = mkdtempSync(join(tmpdir(), 'outliner-e2e-'))
+let backend = null
+
+function startBackend() {
+  backend = spawn(BACKEND, [], {
+    env: {
+      ...process.env,
+      DATA_DIR: backendDir,
+      BIND: `127.0.0.1:${BACKEND_PORT}`,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  })
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error('backend did not start')),
+      15000,
+    )
+    backend.stdout.on('data', (chunk) => {
+      if (chunk.toString().includes('listening')) {
+        clearTimeout(timer)
+        setTimeout(resolve, 100)
+      }
+    })
+  })
+}
+
+function stopBackend() {
+  if (backend?.pid === undefined) return
+  try {
+    process.kill(-backend.pid, 'SIGKILL')
+  } catch {
+    backend?.kill('SIGKILL')
+  }
+  backend = null
+}
+
+/** A backend with nothing stored, as if it had never been written to. */
+async function resetBackend() {
+  stopBackend()
+  rmSync(backendDir, { recursive: true, force: true })
+  backendDir = mkdtempSync(join(tmpdir(), 'outliner-e2e-'))
+  await startBackend()
+}
+
+/** What the backend currently holds, or null when it holds nothing. */
+function storedDocument() {
+  try {
+    return readFileSync(join(backendDir, 'doc.json'), 'utf8')
+  } catch {
+    return null
+  }
+}
+
 // `detached` puts the server in its own process group. npx launches vite via a
 // shell, so killing the direct child would orphan the node process and leave
 // the port bound; killing the group takes the whole tree.
@@ -204,6 +272,8 @@ const server = spawn('npx', ['vite', 'preview', '--port', String(PORT)], {
 })
 
 function stopServer() {
+  stopBackend()
+  rmSync(backendDir, { recursive: true, force: true })
   if (server.pid === undefined || server.killed) return
   try {
     process.kill(-server.pid, 'SIGKILL')
@@ -217,6 +287,8 @@ process.on('SIGINT', () => {
   stopServer()
   process.exit(130)
 })
+
+await startBackend()
 
 await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error('preview server timeout')), 30000)
@@ -240,10 +312,11 @@ page.on('pageerror', (error) => {
   failures += 1
   console.log(`  FAIL uncaught page error — ${error.message}`)
 })
-// No sync backend runs during these tests, so every /api request fails by
-// design, and the browser logs each failure as a console error that cannot be
-// suppressed. Filtered by URL rather than by message, so a genuinely missing
-// asset still fails the run.
+// Sync requests are expected to fail during the offline section and while the
+// backend restarts between resets, and the browser logs each as a console
+// error that cannot be suppressed. Filtered by URL, so a genuinely missing
+// asset still fails the run; sync itself is covered by explicit checks below
+// rather than by the absence of console noise.
 page.on('console', (message) => {
   if (message.type() !== 'error') return
   if (message.location()?.url?.includes('/api/')) return
@@ -1313,6 +1386,82 @@ check(
   (await outlineOf(page)).some((row) => row.includes('Edit this line offline!')),
 )
 await context.setOffline(false)
+
+console.log('\nsync: an edit reaches the server')
+await resetDocument(page)
+// A fresh client against an empty store uploads what it has.
+await page.waitForFunction(
+  () => document.querySelector('.status')?.textContent?.includes('Saved'),
+  null,
+  { timeout: 15000 },
+)
+check('the first upload happens on its own', storedDocument() !== null)
+
+await clickRow(page, 'Edit this line')
+await page.keyboard.press('End')
+await page.keyboard.type(' SYNCED')
+check(
+  'the status says so immediately',
+  (await page.locator('.status').textContent())?.includes('Unsaved'),
+  await page.locator('.status').textContent(),
+)
+check(
+  'and nothing has been uploaded yet',
+  !(storedDocument() ?? '').includes('SYNCED'),
+)
+
+// Past the five-second quiet period.
+await page.waitForTimeout(7000)
+check('the edit reaches the server', (storedDocument() ?? '').includes('SYNCED'))
+check(
+  'and the status settles on Saved',
+  (await page.locator('.status').textContent())?.includes('Saved'),
+  await page.locator('.status').textContent(),
+)
+
+console.log('\nsync: another device picks it up')
+const second = await context.newPage()
+await second.goto(BASE)
+await second.waitForSelector('.row')
+await second.waitForTimeout(1500)
+const seen = await second.$$eval('[data-item-id]', (nodes) =>
+  nodes.map((node) => node.textContent),
+)
+check(
+  'a second client loads what the first saved',
+  seen.some((text) => text?.includes('SYNCED')),
+  JSON.stringify(seen.slice(0, 3)),
+)
+
+console.log('\nsync: a stale write is refused rather than applied')
+// Move the server on underneath this client, exactly as a second device
+// would. Its next upload must lose, and it must take the server's version.
+await second.locator('[data-item-id]', { hasText: 'SYNCED' }).first().click()
+await second.keyboard.press('End')
+await second.keyboard.type(' FROM-SECOND')
+await second.waitForTimeout(7000)
+check('the second client wrote', (storedDocument() ?? '').includes('FROM-SECOND'))
+
+await page.bringToFront()
+await clickRow(page, 'Then add your own below')
+await page.keyboard.press('End')
+await page.keyboard.type(' FROM-FIRST')
+await page.waitForTimeout(9000)
+const settled = storedDocument() ?? ''
+check(
+  'the server keeps the version it already had',
+  settled.includes('FROM-SECOND'),
+  'the losing write overwrote it',
+)
+const firstRows = await page.$$eval('[data-item-id]', (nodes) =>
+  nodes.map((node) => node.textContent),
+)
+check(
+  'and the losing client took the server version',
+  firstRows.some((text) => text?.includes('FROM-SECOND')),
+  JSON.stringify(firstRows.slice(0, 4)),
+)
+await second.close()
 
 console.log('\npersistence across reload')
 

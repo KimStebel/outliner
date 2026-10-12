@@ -1,17 +1,27 @@
 /**
- * Smoke-test the deployed site.
+ * Did the deployment land?
  *
- * Runs against the real origin, so it exercises the things only production
- * has: the Caddy response headers, the content security policy, and a service
- * worker in a genuinely secure context. A CSP that blocks something shows up
- * here as a console error, which this treats as a failure.
+ * This asks about configuration and plumbing, not behaviour: is the right
+ * build live, is it reachable over a valid certificate, are the headers and
+ * auth wired up, does the API answer. Behaviour belongs to the unit suites
+ * and to `npm run e2e`, which run against instances they own.
  *
- * Usage: node scripts/smoke-prod.mjs [url]
+ * Nothing here writes. Writes are blocked at the network layer, and the
+ * stored document's ETag is compared at the start and the end to prove it —
+ * an earlier version of this suite wrote to production and destroyed the
+ * document it was meant to be checking.
+ *
+ * Usage: npm run build && node scripts/smoke-prod.mjs [url]
  */
 
-import { chromium } from 'playwright'
+import { readFileSync } from 'node:fs'
+import { chromium, request } from 'playwright'
 
 const BASE = process.argv[2] ?? 'https://outliner.stebel.kim'
+const API = `${BASE}/api/doc`
+
+const [user, ...secret] = readFileSync('prod-basic-auth', 'utf8').trim().split(':')
+const password = secret.join(':')
 
 let failures = 0
 let checks = 0
@@ -25,109 +35,174 @@ function check(label, condition, detail = '') {
   }
 }
 
+const api = await request.newContext({
+  httpCredentials: { username: user, password },
+})
+const anonymous = await request.newContext()
+
+console.log('\nreachable')
+const root = await anonymous.get(`${BASE}/`)
+check(
+  'the site answers 200 over https',
+  root.status() === 200,
+  String(root.status()),
+)
+const insecure = await anonymous.get(BASE.replace('https://', 'http://'), {
+  maxRedirects: 0,
+})
+check(
+  'plain http redirects',
+  insecure.status() >= 300 && insecure.status() < 400,
+  String(insecure.status()),
+)
+
+console.log('\nthe live build is the one that was deployed')
+// The check this suite exists for. "The deploy silently did not take effect"
+// has happened twice here — a file watcher that saw nothing, and a Caddy that
+// was never reloaded — and nothing else would have noticed.
+// Compare the whole shell rather than one asset reference: it names every
+// hashed bundle, so a change to the CSS alone is caught as readily as a
+// change to the JS.
+const assetPattern = /\/assets\/[A-Za-z0-9_.-]+/g
+const assetsIn = (html) => (html.match(assetPattern) ?? []).sort()
+
+const localShell = readFileSync('dist/index.html', 'utf8').trim()
+const liveShell = (await root.text()).trim()
+const localAssets = assetsIn(localShell)
+const liveAssets = assetsIn(liveShell)
+
+check(
+  'the server is serving the build in dist/',
+  liveShell === localShell,
+  localAssets.join(' ') === liveAssets.join(' ')
+    ? 'the same assets, but the shell differs'
+    : `live names ${liveAssets.join(' ')}, dist/ names ${localAssets.join(' ')}`,
+)
+
+const liveAsset = liveAssets.find((path) => path.endsWith('.js'))
+
+console.log('\nheaders')
+const headers = root.headers()
+for (const [name, expected] of [
+  ['strict-transport-security', /max-age=\d+/],
+  ['content-security-policy', /default-src 'self'/],
+  ['x-content-type-options', /nosniff/],
+  ['x-frame-options', /DENY/],
+  ['referrer-policy', /no-referrer/],
+]) {
+  check(
+    `${name} is set`,
+    expected.test(headers[name] ?? ''),
+    headers[name] ?? '(absent)',
+  )
+}
+check(
+  'the shell is revalidated, so a deploy reaches people',
+  /no-cache/.test(headers['cache-control'] ?? ''),
+  headers['cache-control'] ?? '(absent)',
+)
+const asset = await anonymous.get(`${BASE}${liveAsset}`)
+check(
+  'hashed assets are immutable',
+  /immutable/.test(asset.headers()['cache-control'] ?? ''),
+  asset.headers()['cache-control'] ?? '(absent)',
+)
+const worker = await anonymous.get(`${BASE}/sw.js`)
+check(
+  'the service worker is revalidated too',
+  /no-cache/.test(worker.headers()['cache-control'] ?? ''),
+  worker.headers()['cache-control'] ?? '(absent)',
+)
+
+console.log('\nauth')
+const unauthenticated = await anonymous.get(API)
+check('the API refuses anonymous reads', unauthenticated.status() === 401)
+check(
+  'and challenges, so the browser can prompt',
+  /basic/i.test(unauthenticated.headers()['www-authenticate'] ?? ''),
+  unauthenticated.headers()['www-authenticate'] ?? '(absent)',
+)
+const wrong = await request.newContext({
+  httpCredentials: { username: 'nobody', password: 'wrong' },
+})
+check('a wrong password is refused', (await wrong.get(API)).status() === 401)
+await wrong.dispose()
+check('the static site needs no auth', root.status() === 200)
+
+console.log('\nthe API answers')
+const before = await api.get(API)
+check(
+  'an authenticated read succeeds',
+  before.status() === 200 || before.status() === 404,
+  String(before.status()),
+)
+const etagBefore = before.headers()['etag'] ?? null
+if (before.status() === 200) {
+  // Conditional reads must work with the tag a browser is handed, which the
+  // compressing proxy rewrites. If they do not, every poll re-downloads the
+  // whole document and every write is refused as stale.
+  const conditional = await api.get(API, {
+    headers: { 'If-None-Match': etagBefore },
+  })
+  check('a conditional read with that tag gets 304', conditional.status() === 304)
+}
+
 const browser = await chromium.launch()
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   hasTouch: true,
   isMobile: true,
+  httpCredentials: { username: user, password },
 })
-const page = await context.newPage()
 
+// A structural guarantee that this suite cannot write, whatever the app does.
+let writesAttempted = 0
+await context.route('**/api/**', (route) => {
+  const method = route.request().method()
+  if (method === 'GET' || method === 'HEAD') return route.continue()
+  writesAttempted += 1
+  return route.abort()
+})
+
+const page = await context.newPage()
 const problems = []
 page.on('pageerror', (error) => problems.push(`pageerror: ${error.message}`))
 page.on('console', (message) => {
   if (message.type() !== 'error') return
-  // The browser logs any 4xx as a console error. A 401 before signing in and
-  // a 404 against an empty store are both normal protocol outcomes, not
-  // faults, and there is no way to suppress the log.
-  if (/status of (401|404)/.test(message.text())) return
+  // Sync requests fail here by construction, writes being blocked above, and
+  // the browser logs each as an error that cannot be suppressed.
+  if (message.location()?.url?.includes('/api/')) return
   problems.push(`console: ${message.text()}`)
 })
 
-console.log(`\nloading ${BASE}`)
-const response = await page.goto(BASE, { waitUntil: 'load' })
-check(
-  'responds 200 over https',
-  response?.status() === 200,
-  String(response?.status()),
-)
+console.log('\nthe app runs')
+await page.goto(BASE, { waitUntil: 'load' })
 await page.waitForSelector('.row')
-
-const protocol = await page.evaluate(
+check('it renders rows', (await page.$$eval('.row', (n) => n.length)) > 0)
+const transport = await page.evaluate(
   () => performance.getEntriesByType('navigation')[0]?.nextHopProtocol ?? '',
 )
+check('over HTTP/2 or HTTP/3', /^h[23]/.test(transport), transport || '(unknown)')
 check(
-  'negotiated HTTP/2 or HTTP/3',
-  /^h[23]/.test(protocol),
-  protocol || '(unknown)',
+  'in a secure context, which the service worker needs',
+  await page.evaluate(() => window.isSecureContext),
 )
+check('nothing was blocked by the CSP', problems.length === 0, problems.join(' | '))
 
-const security = await page.evaluate(() => ({
-  secure: window.isSecureContext,
-  protocol: location.protocol,
-}))
-check(
-  'is a secure context, which the service worker needs',
-  security.secure && security.protocol === 'https:',
-  JSON.stringify(security),
-)
-
-const rows = await page.$$eval('.row [data-item-id]', (nodes) =>
-  nodes.map((node) => node.textContent),
-)
-check('the app renders its rows', rows.length > 0, JSON.stringify(rows.slice(0, 2)))
-
-console.log('\nnothing blocked by the content security policy')
-check(
-  'no console or page errors on load',
-  problems.length === 0,
-  problems.join(' | '),
-)
-
-console.log('\nediting works on the deployed build')
-await page.locator('[data-item-id]', { hasText: 'Edit this line' }).first().click()
-await page.keyboard.press('End')
-await page.keyboard.type(' live')
-check(
-  'typing lands',
-  (await page.evaluate(() => document.activeElement?.textContent)) ===
-    'Edit this line live',
-)
-await page.keyboard.press('Enter')
-await page.keyboard.type('new row')
-await page.keyboard.press('Tab')
-const depths = await page.$$eval('.row', (nodes) =>
-  nodes.map((node) => ({
-    text: node.querySelector('[data-item-id]')?.textContent,
-    depth: Number(getComputedStyle(node).getPropertyValue('--depth').trim() || '0'),
-  })),
-)
-const nested = depths.find((row) => row.text === 'new row')
-check(
-  'Enter and Tab still nest',
-  nested !== undefined && nested.depth === 2,
-  JSON.stringify(nested),
-)
-
-console.log('\ninstallable')
+console.log('\ninstallable and offline')
 const manifest = await page.evaluate(async () => {
   const link = document.querySelector('link[rel="manifest"]')
-  if (link === null) return null
   const result = await fetch(link.href)
   return result.ok ? result.json() : null
 })
-check('the manifest loads', manifest !== null)
-check('with standalone display', manifest?.display === 'standalone')
-const iconOk = await page.evaluate(async (icons) => {
-  for (const icon of icons) {
-    const result = await fetch(icon.src)
-    if (!result.ok) return false
-  }
-  return true
-}, manifest?.icons ?? [])
-check('and every icon it declares', iconOk)
-
-console.log('\nservice worker in a real secure context')
+check('the manifest loads and is standalone', manifest?.display === 'standalone')
+check(
+  'every icon it declares resolves',
+  await page.evaluate(async (icons) => {
+    for (const icon of icons) if (!(await fetch(icon.src)).ok) return false
+    return true
+  }, manifest?.icons ?? []),
+)
 await page.waitForFunction(
   () => navigator.serviceWorker.controller !== null,
   null,
@@ -135,24 +210,31 @@ await page.waitForFunction(
     timeout: 20000,
   },
 )
-check('registers and controls the page', true)
+check('the service worker controls the page', true)
 
-console.log('\nworks with the network cut')
-await page.waitForTimeout(800)
 await context.setOffline(true)
 await page.reload()
 await page.waitForSelector('.row', { timeout: 15000 })
-const offlineRows = await page.$$eval('.row [data-item-id]', (nodes) =>
-  nodes.map((node) => node.textContent),
-)
-check('the app loads offline', offlineRows.length > 0)
 check(
-  'and the edit made online is still there',
-  offlineRows.some((text) => text?.includes('Edit this line live')),
-  JSON.stringify(offlineRows.slice(0, 3)),
+  'the app still loads with the network cut',
+  (await page.$$eval('.row', (n) => n.length)) > 0,
 )
 await context.setOffline(false)
 
+console.log('\nproduction was left alone')
+const after = await api.get(API)
+check(
+  'the stored document is untouched',
+  (after.headers()['etag'] ?? null) === etagBefore &&
+    after.status() === before.status(),
+  `was ${etagBefore ?? before.status()}, now ${after.headers()['etag'] ?? after.status()}`,
+)
+if (writesAttempted > 0) {
+  console.log(`  --   ${writesAttempted} write(s) were attempted and blocked`)
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`)
 await browser.close()
+await api.dispose()
+await anonymous.dispose()
 process.exit(failures === 0 ? 0 : 1)
