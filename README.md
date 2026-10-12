@@ -141,6 +141,11 @@ copy.
 against a fake transport; `httpSync.ts` is the HTTP half; `SyncIndicator.svelte`
 shows the result.
 
+- **An upload that would change nothing is skipped.** The whole document goes
+  up every time, so this matters: a no-op operation (Shift-Tab at the top
+  level) or typing a character and deleting it still mark the document dirty
+  while leaving it byte-identical. The client compares against the bytes the
+  server is known to hold, so those cost nothing at all.
 - Edits upload after **5 seconds of quiet**, and the timer restarts on every
   keystroke. The page being hidden flushes immediately.
 - The server is polled every **10 seconds** while the tab is in the foreground,

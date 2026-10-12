@@ -155,7 +155,10 @@ describe('saving edits', () => {
     await vi.advanceTimersByTimeAsync(5_000)
 
     expect(h.transport.putCalls[0]?.etag).toBe('"v1"')
-    // And the next upload is based on what the server just returned.
+
+    // The next upload is based on what the server just returned. The document
+    // has to actually change, or there is nothing to send.
+    h.document = 'local-v2'
     h.engine.markDirty()
     await vi.advanceTimersByTimeAsync(5_000)
     expect(h.transport.putCalls[1]?.etag).toBe('"after-1"')
@@ -425,5 +428,72 @@ describe('the replacement notice', () => {
     await vi.advanceTimersByTimeAsync(5_000)
     expect(h.engine.current.replacedFromServer).toBe(false)
     expect(h.state).toBe('idle')
+  })
+})
+
+describe('uploads that would change nothing', () => {
+  it('skips the upload when the server already holds this exact document', async () => {
+    const h = setup({ initialEtag: '"v1"' })
+    await h.engine.start()
+
+    h.document = 'local-v2'
+    h.engine.markDirty()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(h.transport.putCalls).toHaveLength(1)
+
+    // Dirty again, but the document is byte-identical to what was just sent.
+    h.engine.markDirty()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(h.transport.putCalls).toHaveLength(1)
+    expect(h.state).toBe('idle')
+  })
+
+  it('still uploads once something actually changes', async () => {
+    const h = setup({ initialEtag: '"v1"' })
+    await h.engine.start()
+    h.engine.markDirty()
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    h.engine.markDirty()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(h.transport.putCalls).toHaveLength(1)
+
+    h.document = 'local-v3'
+    h.engine.markDirty()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(h.transport.putCalls).toHaveLength(2)
+    expect(h.transport.putCalls[1]?.body).toBe('local-v3')
+  })
+
+  it('does not skip against a document the server never accepted', async () => {
+    // A failed upload leaves the server holding the old version, so the same
+    // bytes must still be sent on the retry.
+    const h = setup({ initialEtag: '"v1"' })
+    await h.engine.start()
+
+    h.engine.markDirty()
+    h.transport.puts.push({ kind: 'failed', offline: true, message: 'network' })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(h.transport.putCalls).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(h.transport.putCalls).toHaveLength(2)
+  })
+
+  it('skips after adopting the server copy, which is already identical', async () => {
+    const h = setup({ initialEtag: '"v1"' })
+    h.transport.loads.push({ kind: 'document', body: 'remote-v2', etag: '"v2"' })
+    await h.engine.start()
+
+    h.engine.markDirty()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(h.transport.putCalls).toHaveLength(0)
+  })
+
+  it('uploads when the server holds nothing, whatever was sent before', async () => {
+    const h = setup()
+    h.transport.loads.push({ kind: 'absent' })
+    await h.engine.start()
+    expect(h.transport.putCalls).toHaveLength(1)
   })
 })

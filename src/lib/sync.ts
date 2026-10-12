@@ -97,6 +97,13 @@ export class SyncEngine {
   private active = true
   private failures = 0
   private replaced = false
+  /**
+   * The exact bytes the server is known to hold. Used to skip uploads that
+   * would change nothing — typing a character and deleting it again, or an
+   * operation that turned out to be a no-op, both mark the document dirty
+   * while leaving it identical.
+   */
+  private storedBody: string | null = null
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private pollTimer: ReturnType<typeof setTimeout> | null = null
@@ -209,6 +216,10 @@ export class SyncEngine {
           })
           return
         }
+        // The server's bytes, not a re-serialisation of them: this records
+        // what the server holds, which is what a later upload is compared
+        // against.
+        this.storedBody = result.body
         // The local copy is gone, including anything unsaved: the server wins.
         this.replaced = true
         this.dirty = false
@@ -221,6 +232,7 @@ export class SyncEngine {
       case 'absent': {
         this.failures = 0
         // Nothing stored yet, so whatever is here is the starting point.
+        this.storedBody = null
         this.setEtag(null)
         this.dirty = true
         await this.save()
@@ -247,6 +259,16 @@ export class SyncEngine {
     }
 
     const body = this.options.snapshot()
+    if (body === this.storedBody) {
+      // The server already holds exactly this. Sending it again would cost a
+      // whole upload — the document goes up in full every time — to no end.
+      this.dirty = false
+      this.resaveQueued = false
+      this.clearTimer('save')
+      this.emit({ state: 'idle', message: null })
+      return
+    }
+
     this.inFlight = true
     this.clearTimer('save')
     // This upload covers every edit made up to now. Anything that arrives
@@ -261,6 +283,7 @@ export class SyncEngine {
       case 'stored': {
         this.failures = 0
         this.setEtag(result.etag)
+        this.storedBody = body
         // What is on the server is now this device's own document, so any
         // earlier replacement notice no longer describes anything.
         this.replaced = false

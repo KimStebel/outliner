@@ -1615,6 +1615,42 @@ check(
 check('and immediately beside the dot', fine.dot.left - fine.fold.right < 12)
 await desktop.close()
 
+console.log('\nsync: an edit that changes nothing is not uploaded')
+await resetDocument(page)
+await page.waitForFunction(
+  () => document.querySelector('.status')?.textContent?.includes('Saved'),
+  null,
+  { timeout: 15000 },
+)
+let uploads = 0
+page.on('request', (request) => {
+  if (request.method() === 'PUT' && request.url().includes('/api/doc')) uploads += 1
+})
+
+// Shift-Tab at the top level is a no-op operation, but it still reports a
+// change — which used to schedule a full upload of an identical document.
+await clickRow(page, 'Welcome')
+await page.keyboard.press('Shift+Tab')
+await page.waitForTimeout(7000)
+check('a no-op edit uploads nothing', uploads === 0, `${uploads} upload(s)`)
+
+// Typing and removing it again leaves the document byte-identical.
+await page.keyboard.type('zz')
+await page.keyboard.press('Backspace')
+await page.keyboard.press('Backspace')
+await page.waitForTimeout(7000)
+check(
+  'typing and undoing it uploads nothing',
+  uploads === 0,
+  `${uploads} upload(s)`,
+)
+
+// But a real change still goes.
+await page.keyboard.type(' REAL')
+await page.waitForTimeout(7000)
+check('a real change still uploads', uploads === 1, `${uploads} upload(s)`)
+check('and reaches the server', (storedDocument() ?? '').includes('REAL'))
+
 console.log('\npersistence across reload')
 
 const beforeReload = await outlineOf(page)
