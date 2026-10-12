@@ -1,5 +1,4 @@
 outliner.stebel.kim {
-	root * /srv
 	encode zstd gzip
 
 	header {
@@ -17,17 +16,33 @@ outliner.stebel.kim {
 		-Server
 	}
 
-	# Asset filenames contain a content hash, so they can be cached forever.
-	@immutable path /assets/*
-	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	# The sync API. Auth lives here rather than in the service, so the service
+	# stays a dumb document store.
+	#
+	# The credentials are imported from a generated file rather than passed as
+	# environment variables: compose interpolates env_file values, and a bcrypt
+	# hash is full of `$`, so it arrives mangled. Caddy's import is textual and
+	# leaves it alone.
+	handle /api/* {
+		import /etc/caddy/auth.caddy
+		reverse_proxy backend:8080
+	}
 
-	# These keep their names across releases. If they were cached, a deploy
-	# would never reach anyone: the shell would keep pointing at old assets and
-	# the service worker would never learn it had been replaced.
-	@revalidate path / /index.html /sw.js /manifest.webmanifest
-	header @revalidate Cache-Control "no-cache"
+	handle {
+		root * /srv
 
-	# Single-page app: unknown paths render the same shell.
-	try_files {path} /index.html
-	file_server
+		# Asset filenames contain a content hash, so they can be cached forever.
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+		# These keep their names across releases. If they were cached, a deploy
+		# would never reach anyone: the shell would keep pointing at old assets
+		# and the service worker would never learn it had been replaced.
+		@revalidate path / /index.html /sw.js /manifest.webmanifest
+		header @revalidate Cache-Control "no-cache"
+
+		# Single-page app: unknown paths render the same shell.
+		try_files {path} /index.html
+		file_server
+	}
 }

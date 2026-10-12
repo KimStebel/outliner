@@ -14,10 +14,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ENV_FILE=prod-env
-if [[ ! -f $ENV_FILE ]]; then
-  echo "Missing $ENV_FILE — it holds the server address and credentials." >&2
-  exit 1
-fi
+AUTH_FILE=prod-basic-auth
+for required in "$ENV_FILE" "$AUTH_FILE"; do
+  if [[ ! -f $required ]]; then
+    echo "Missing $required." >&2
+    exit 1
+  fi
+done
 
 field() { sed -n "s/^$1:[[:space:]]*//p" "$ENV_FILE" | head -1; }
 
@@ -45,13 +48,43 @@ sshpass -e rsync -az --delete \
   -e "ssh ${SSH_OPTS[*]}" \
   dist/ "$USER@$HOST:$REMOTE_DIR/site/"
 
-echo "==> Uploading Caddy config"
+echo "==> Uploading Caddy config and backend source"
 sshpass -e rsync -az \
   -e "ssh ${SSH_OPTS[*]}" \
   deploy/Caddyfile deploy/docker-compose.yml "$USER@$HOST:$REMOTE_DIR/"
+sshpass -e rsync -az --delete \
+  --exclude target \
+  -e "ssh ${SSH_OPTS[*]}" \
+  backend/ "$USER@$HOST:$REMOTE_DIR/backend/"
 
-echo "==> Starting Caddy"
+echo "==> Writing Caddy credentials"
+# Hashed locally with the same Caddy image that will verify it, so the
+# plaintext password never reaches the server at all — only the bcrypt hash.
+# `-e PW` takes the value from this process's environment rather than argv, so
+# it does not appear in `ps`.
+BASIC_USER=$(cut -d: -f1 "$AUTH_FILE")
+PW=$(cut -d: -f2- "$AUTH_FILE")
+export PW
+BASIC_HASH=$(docker run --rm -e PW caddy:2-alpine \
+  sh -c 'caddy hash-password --plaintext "$PW"')
+unset PW
+
+# Written as a Caddyfile snippet rather than environment variables: compose
+# interpolates env_file values and would eat the `$` sequences in the hash.
+AUTH_SNIPPET=$(mktemp)
+trap 'rm -f "$AUTH_SNIPPET"' EXIT
+chmod 600 "$AUTH_SNIPPET"
+printf 'basic_auth {\n\t%s %s\n}\n' "$BASIC_USER" "$BASIC_HASH" >"$AUTH_SNIPPET"
+sshpass -e rsync -az --chmod=F600 \
+  -e "ssh ${SSH_OPTS[*]}" \
+  "$AUTH_SNIPPET" "$USER@$HOST:$REMOTE_DIR/auth.caddy"
+
+# The backend runs unprivileged, so its data directory must be writable by it.
 sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
-  "cd $REMOTE_DIR && docker compose up -d && docker compose ps"
+  "mkdir -p $REMOTE_DIR/data && chown -R 10001:10001 $REMOTE_DIR/data"
+
+echo "==> Building and starting"
+sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
+  "cd $REMOTE_DIR && docker compose up -d --build && docker compose ps"
 
 echo "==> Done. https://outliner.stebel.kim"

@@ -1,0 +1,25 @@
+[package]
+name = "outliner-sync"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+sha2 = "0.10"
+httpdate = "1"
+# Only used to reject a body that is not syntactically JSON. The service knows
+# nothing about the document's shape.
+serde_json = "1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile = "3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
