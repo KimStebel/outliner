@@ -123,16 +123,33 @@ the displaced copy as `doc.json.bak`. A crash mid-write cannot leave a
 truncated document, which would otherwise be pulled over a client's good local
 copy.
 
-### Before wiring up the frontend
+### The client
 
-Two things are decided but not built, since this round was backend only:
+`sync.ts` is the state machine, free of Svelte and the DOM so it can be tested
+against a fake transport; `httpSync.ts` is the HTTP half; `SyncIndicator.svelte`
+shows the result.
 
-- **The service worker must skip `/api/*`.** As written it runtime-caches every
-  same-origin GET, so `GET /api/doc` would be served from cache forever while
-  `HEAD` (which it ignores) correctly reported a change. This is the first
-  thing to fix.
-- **On conflict the server wins.** A `412` means discard the local copy and
-  take the server's.
+- Edits upload after **5 seconds of quiet**, and the timer restarts on every
+  keystroke. The page being hidden flushes immediately.
+- The server is polled every **10 seconds** while the tab is in the foreground,
+  and once more the moment it returns. Hidden tabs do not poll.
+- **The server wins a conflict.** A refused upload means the local copy is
+  replaced. The displaced version is kept at `outliner:replaced-backup` in
+  localStorage — one copy, as a way back from a surprise, not a history.
+- A server copy that fails validation is **ignored rather than adopted**, so a
+  corrupt file cannot destroy a good local document.
+- `401` is its own state, not a retry loop: it offers a **Sign in** action that
+  opens the API as a _navigation_, which is what makes the browser show its
+  basic-auth prompt. A `fetch` that gets a 401 does not reliably raise it.
+
+The flush on hide is a plain `fetch`, deliberately not `keepalive`: keepalive
+bodies are capped at 64KB, which this document can exceed, so it would fail
+exactly when it matters. If the page dies before the request completes nothing
+is lost — the edit is in localStorage and uploads on next launch.
+
+**First sync is the one dangerous moment.** Server-wins means the first device
+to upload defines the document, and any other device then adopts it, discarding
+whatever it had. Open the device holding the authoritative list first.
 
 ## Deployment
 
@@ -355,5 +372,6 @@ own paste interception and suppression of the bold/italic/underline shortcuts.
 - [x] **6** PWA manifest + offline install (perf pass skipped: fast enough)
 - [x] Deployed behind Caddy with https and HTTP/3
 - [x] Sync backend: whole-document store with conditional writes
-- [ ] Frontend sync client (see "Before wiring up the frontend")
+- [x] Frontend sync client
+- [ ] Automated two-device sync test (deferred in favour of manual testing)
 - [ ] **7** Desktop: wider layout (shortcuts and drag-reorder already done)

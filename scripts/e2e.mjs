@@ -240,11 +240,15 @@ page.on('pageerror', (error) => {
   failures += 1
   console.log(`  FAIL uncaught page error — ${error.message}`)
 })
+// No sync backend runs during these tests, so every /api request fails by
+// design, and the browser logs each failure as a console error that cannot be
+// suppressed. Filtered by URL rather than by message, so a genuinely missing
+// asset still fails the run.
 page.on('console', (message) => {
-  if (message.type() === 'error') {
-    failures += 1
-    console.log(`  FAIL console error — ${message.text()}`)
-  }
+  if (message.type() !== 'error') return
+  if (message.location()?.url?.includes('/api/')) return
+  failures += 1
+  console.log(`  FAIL console error — ${message.text()}`)
 })
 
 await page.goto(BASE)

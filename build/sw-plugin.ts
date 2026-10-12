@@ -94,7 +94,14 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const request = event.request
   if (request.method !== 'GET') return
-  if (new URL(request.url).origin !== self.location.origin) return
+
+  const url = new URL(request.url)
+  if (url.origin !== self.location.origin) return
+
+  // The sync API must always go to the network. Caching it would serve a
+  // stale document forever while HEAD — which this handler ignores, being
+  // GET-only — kept correctly reporting that it had changed.
+  if (url.pathname.startsWith('/api/')) return
 
   // Every route renders the same shell, so a navigation is always answered
   // from cache first. That is what makes a cold start work with no network.

@@ -19,6 +19,16 @@ export default defineConfig({
     // protection, so keep it to trusted networks — it is a dev-only setting and
     // does not affect `build` or `preview`.
     allowedHosts: true,
+    // Point /api at a locally-run backend:
+    //   cargo run --manifest-path backend/Cargo.toml
+    // with DATA_DIR set somewhere scratch and BIND=127.0.0.1:8787.
+    // In production Caddy does this, and adds the basic auth.
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: false,
+      },
+    },
     watch: {
       // This project lives on a 9p share from the VM host, and 9p does not
       // deliver inotify events to the guest. Without polling the watcher never
@@ -37,6 +47,16 @@ export default defineConfig({
     port: 8080,
     strictPort: true,
     allowedHosts: true,
+    // Point /api at a locally-run backend:
+    //   cargo run --manifest-path backend/Cargo.toml
+    // with DATA_DIR set somewhere scratch and BIND=127.0.0.1:8787.
+    // In production Caddy does this, and adds the basic auth.
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: false,
+      },
+    },
   },
   test: {
     include: ['src/**/*.test.ts'],

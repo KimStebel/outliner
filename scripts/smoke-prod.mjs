@@ -36,7 +36,12 @@ const page = await context.newPage()
 const problems = []
 page.on('pageerror', (error) => problems.push(`pageerror: ${error.message}`))
 page.on('console', (message) => {
-  if (message.type() === 'error') problems.push(`console: ${message.text()}`)
+  if (message.type() !== 'error') return
+  // The browser logs any 4xx as a console error. A 401 before signing in and
+  // a 404 against an empty store are both normal protocol outcomes, not
+  // faults, and there is no way to suppress the log.
+  if (/status of (401|404)/.test(message.text())) return
+  problems.push(`console: ${message.text()}`)
 })
 
 console.log(`\nloading ${BASE}`)

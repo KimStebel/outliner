@@ -7,7 +7,7 @@
  */
 
 import type { Caret, Doc, ItemId, Row } from './model'
-import { createDoc, findItem, visibleRows } from './model'
+import { cloneItem, createDoc, findItem, visibleRows } from './model'
 import { countNodes, parseMarkdown } from './markdown'
 import type { Change } from './tx'
 import { Tx, mergeChanges, reapply, revert } from './tx'
@@ -228,6 +228,29 @@ export class DocStore {
 
   setCollapsed(id: ItemId, collapsed: boolean): void {
     this.transact('collapse', (tx) => ops.setCollapsed(tx, id, collapsed))
+  }
+
+  /**
+   * Swap in a whole document from elsewhere — the server's copy.
+   *
+   * Mutates the existing `items` map rather than replacing `doc`, because the
+   * object handed to the constructor is the reactive proxy; assigning over it
+   * would leave the UI bound to the old one.
+   *
+   * History is discarded. Undoing across a wholesale replacement would
+   * interleave two unrelated documents, which is not something a user could
+   * reason about.
+   */
+  replaceAll(next: Doc): void {
+    const items = this.doc.items
+    for (const id of Object.keys(items)) delete items[id]
+    for (const [id, item] of Object.entries(next.items)) items[id] = cloneItem(item)
+    this.doc.rootId = next.rootId
+
+    this.past = []
+    this.future = []
+    const first = items[next.rootId]?.children[0]
+    this.caret = first === undefined ? null : { id: first, offset: 0 }
   }
 
   // -- history --------------------------------------------------------------

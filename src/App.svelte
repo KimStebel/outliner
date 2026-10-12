@@ -8,6 +8,10 @@
   import ImportDialog from './lib/ImportDialog.svelte'
   import Breadcrumb from './lib/Breadcrumb.svelte'
   import type { ItemId } from './lib/model'
+  import SyncIndicator from './lib/SyncIndicator.svelte'
+  import { SyncEngine, type SyncStatus } from './lib/sync'
+  import { createHttpTransport } from './lib/httpSync'
+  import { reviveEnvelope } from './lib/persist'
 
   const storage = createDocStorage({
     backend: createBrowserStorage(),
@@ -76,23 +80,123 @@
     handleChange()
   }
 
+  // ---------------------------------------------------------------------------
+  // Sync
+  // ---------------------------------------------------------------------------
+
+  const ETAG_KEY = 'outliner:etag'
+  /** The last local document that the server's copy replaced. */
+  const REPLACED_KEY = 'outliner:replaced-backup'
+
+  let syncStatus = $state<SyncStatus>({
+    state: 'idle',
+    message: null,
+    replacedFromServer: false,
+  })
+
+  const sync = new SyncEngine({
+    transport: createHttpTransport(),
+    snapshot: () => JSON.stringify(envelope(store.doc)),
+    adopt: adoptFromServer,
+    initialEtag: readEtag(),
+    persistEtag: writeEtag,
+    onStatus: (status) => (syncStatus = status),
+  })
+
+  /**
+   * Take the server's document. Validated with the same reviver the local
+   * store uses, so a corrupt file on the server cannot replace a good local
+   * copy — returning false leaves everything untouched.
+   */
+  function adoptFromServer(body: string): boolean {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(body) as unknown
+    } catch {
+      return false
+    }
+    const incoming = reviveEnvelope(parsed)
+    if (incoming === null) return false
+
+    // Server-wins means the local copy is discarded, which is the agreed
+    // policy but is not reversible — undo history is cleared too. Keep the
+    // displaced version aside so a surprise is recoverable by hand.
+    keepDisplacedCopy()
+    store.replaceAll(incoming.doc)
+    // Keep the offline copy in step, so a reload without a network shows what
+    // was just adopted rather than reverting.
+    storage.save(incoming)
+    storage.flush()
+    revision += 1
+    return true
+  }
+
+  /**
+   * Stash whatever is about to be overwritten. Only the most recent is kept;
+   * this is a safety net for the moment a device syncs for the first time
+   * and finds a document it has never seen, not a version history.
+   */
+  function keepDisplacedCopy(): void {
+    try {
+      const current = JSON.stringify(envelope(store.doc))
+      const empty =
+        store.rows().length === 1 && store.textOf(store.rows()[0]?.id ?? '') === ''
+      if (empty) return
+      window.localStorage.setItem(REPLACED_KEY, current)
+    } catch {
+      // A full or unavailable store must not stop the sync itself.
+    }
+  }
+
+  function readEtag(): string | null {
+    try {
+      return window.localStorage.getItem(ETAG_KEY)
+    } catch {
+      return null
+    }
+  }
+
+  function writeEtag(etag: string | null): void {
+    try {
+      if (etag === null) window.localStorage.removeItem(ETAG_KEY)
+      else window.localStorage.setItem(ETAG_KEY, etag)
+    } catch {
+      // Storage being unavailable costs an extra upload next launch, nothing
+      // worse, so it is not worth surfacing.
+    }
+  }
+
   function handleChange(): void {
     revision += 1
     storage.save(envelope(store.doc))
+    sync.markDirty()
   }
 
   // A phone can discard the tab without ever firing `unload`, so flush the
   // debounced write at the last reliable moments instead.
+  //
+  // The upload is a plain fetch rather than a `keepalive` one: keepalive
+  // bodies are capped at 64KB, which this document can exceed, so it would
+  // fail exactly when it matters. The page is normally still alive long
+  // enough for an ordinary request. If it is not, nothing is lost — the edit
+  // is in localStorage and uploads on next launch.
   $effect(() => {
-    const flush = (): void => storage.flush()
+    const flush = (): void => {
+      storage.flush()
+      void sync.flush()
+    }
     const onVisibility = (): void => {
-      if (document.visibilityState === 'hidden') flush()
+      const hidden = document.visibilityState === 'hidden'
+      sync.setActive(!hidden)
+      if (hidden) flush()
     }
     window.addEventListener('pagehide', flush)
     document.addEventListener('visibilitychange', onVisibility)
+    void sync.start()
     return () => {
       window.removeEventListener('pagehide', flush)
       document.removeEventListener('visibilitychange', onVisibility)
+      sync.stop()
       flush()
     }
   })
@@ -100,6 +204,13 @@
 
 <header>
   <h1>Outliner</h1>
+  <SyncIndicator
+    status={syncStatus}
+    onacknowledge={() => {
+      sync.acknowledgeReplacement()
+      syncStatus = sync.current
+    }}
+  />
   <div class="actions">
     <button
       class="icon"
@@ -156,8 +267,12 @@
     z-index: 1;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
+    gap: 0.75rem;
+    /* The sync label's width varies with what it has to say ("Saved" versus
+       "Sync failed"), so rather than budget for the worst case, let the row
+       wrap on a very narrow screen. Nothing gets hidden and nothing
+       overflows. */
+    flex-wrap: wrap;
     padding: 0.5rem 1rem calc(0.5rem + 1px);
     /* `margin-inline: auto` alone would make this flex item shrink to fit its
        content instead of stretching, so set the width explicitly. */
@@ -179,11 +294,13 @@
   .actions {
     display: flex;
     gap: 0.375rem;
+    margin-left: auto;
   }
 
-  /* Four controls plus a title overflow a 320px-wide phone. The title is the
-     one thing here that carries no function, so it is what gives way. */
-  @media (max-width: 24rem) {
+  /* The title is the only thing in the header that carries no function, so it
+     is the first to go when space is short — now that the sync status is
+     competing for the same row. */
+  @media (max-width: 34rem) {
     h1 {
       display: none;
     }
