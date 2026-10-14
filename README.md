@@ -37,6 +37,8 @@ npm install
 | `npm run icons`        | Regenerate the app icons into `public/`     |
 | `npm run deploy`       | Build and push to the production server     |
 | `npm run smoke`        | Check a deployment landed (read-only)       |
+| `npm run auth`         | Start Rauthy locally (`--reset` to wipe it) |
+| `npm run verify:oidc`  | Prove the token shape against real Rauthy   |
 | `npm run test:watch`   | Unit tests in watch mode                    |
 | `npm run check`        | Typecheck (`svelte-check` + `tsc`)          |
 | `npm run format`       | Format in place                             |
@@ -184,6 +186,55 @@ unsaved edits, so this needs an edit landing inside the request itself.
 to upload defines the document, and any other device then adopts it, discarding
 whatever it had. Open the device holding the authoritative list first.
 
+## Auth
+
+Being replaced: the API is behind Caddy's `basic_auth` today, and is moving to
+[Rauthy](https://github.com/sebadob/rauthy) — an OIDC provider — with the
+backend validating JWTs against its JWKS. The point of doing it that way is
+that Rauthy is then not in the path of an API call: the backend caches the
+public keys and verifies signatures itself.
+
+Rauthy is mounted at **`/auth` on the app's own origin**, not on a subdomain.
+All of its routes already live under `/auth`, and its issuer is always
+`<pub_url>/auth/v1/`, so nothing needs rewriting. That means no second
+certificate or DNS record, the app's `connect-src 'self'` CSP stays as it is,
+and the local setup has the same shape as production — Caddy routes `/auth/*`
+there in production, the Vite proxy does locally.
+
+### Running it locally
+
+```sh
+npm run auth          # Rauthy on 8081, proxied to /auth by the dev server
+npm run dev
+npm run verify:oidc   # the whole flow, end to end
+```
+
+Bootstrap data is applied with a plain `INSERT` against an empty database, so
+editing `deploy/rauthy/bootstrap/*.json` does nothing to a database that
+already exists. Use `npm run auth -- --reset` after changing it.
+
+`deploy/rauthy/config.toml` is shared by local and production; everything that
+differs between them — `PUB_URL`, `PROXY_MODE`, `COOKIE_MODE`, `RP_ID`,
+`RP_ORIGIN`, and every secret — arrives as an environment override instead.
+
+### Two things that are easy to get wrong
+
+**Access tokens cannot last longer than 24 hours.** Rauthy validates
+`10 <= access_token_lifetime <= 86400`, and there is no global override. A
+month-long session is reached with a 30 day _refresh_ token instead, which the
+app redeems silently; a password is then only needed once a month.
+
+**A refresh token is not valid when it is issued.** Rauthy sets
+`nbf = now + access_token_lifetime - 60s` and `exp = nbf + refresh_token_lifetime`,
+so it can only be redeemed in the last minute of the access token's life or
+after it has expired. Refreshing at half-life — the usual advice — returns 401
+every time. It also means `exp - iat` is a month _plus_ a day, not a month.
+
+The signing keys rotate on the 1st of each month and this **cannot be
+disabled**, so anything caching the JWKS has to refetch when it meets an
+unknown `kid`, or it breaks monthly. Superseded keys are kept for 90 days, so
+tokens issued before a rotation stay verifiable.
+
 ## Deployment
 
 Live at **https://outliner.stebel.kim**, served by Caddy in Docker.
@@ -230,6 +281,7 @@ Three layers, each against something it owns:
 | ------------------------- | ---------------------------------------- | ------------------- |
 | `cargo test` / `npm test` | nothing — pure logic and a temp dir      | nothing             |
 | `npm run e2e`             | a preview server and a backend it starts | its own scratch dir |
+| `npm run verify:oidc`     | a local Rauthy it expects to be running  | its own database    |
 | `npm run smoke`           | the real deployment                      | **nothing**         |
 
 `npm run e2e` starts a real sync backend on a temporary directory, so the 147
@@ -247,6 +299,13 @@ because an earlier version of this suite ran the full behaviour test against
 production and destroyed the document it was meant to be checking — the
 behaviour it tested was already covered by `cargo test`, so the risk bought
 nothing.
+
+`npm run verify:oidc` exists because the backend's token validation is about
+to depend on a dozen details of Rauthy's behaviour — the exact issuer string,
+which claim marks an access token, whether Ed25519 verification against the
+published JWKS actually works. It asserts all of them against a real Rauthy
+before any of it is written in Rust, where the same mistake is far harder to
+see. Two of those details were wrong when first read from the docs.
 
 The build-identity check is the one that earns the suite its keep: "the deploy
 silently did not take effect" has happened twice here, once from a file

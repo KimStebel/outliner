@@ -15,7 +15,9 @@
     "e2e": "npm run build && node scripts/e2e.mjs",
     "icons": "node scripts/make-icons.mjs",
     "deploy": "./scripts/deploy.sh",
-    "smoke": "npm run build && node scripts/smoke-prod.mjs"
+    "smoke": "npm run build && node scripts/smoke-prod.mjs",
+    "auth": "./deploy/rauthy/rauthy-local.sh",
+    "verify:oidc": "node scripts/verify-oidc.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

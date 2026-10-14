@@ -28,6 +28,17 @@ export default defineConfig({
         target: 'http://127.0.0.1:8787',
         changeOrigin: false,
       },
+      // Rauthy, started by deploy/rauthy/rauthy-local.sh. Proxied rather than
+      // reached on its own port so the browser sees one origin, as it will in
+      // production where Caddy does this: the issuer, the cookies and the CSP
+      // all depend on the app and the identity provider sharing an origin.
+      //
+      // changeOrigin stays false so the Host header remains localhost:8080,
+      // which is what Rauthy is configured as `pub_url` and checks against.
+      '/auth': {
+        target: 'http://127.0.0.1:8081',
+        changeOrigin: false,
+      },
     },
     watch: {
       // This project lives on a 9p share from the VM host, and 9p does not
@@ -54,6 +65,10 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8787',
+        changeOrigin: false,
+      },
+      '/auth': {
+        target: 'http://127.0.0.1:8081',
         changeOrigin: false,
       },
     },

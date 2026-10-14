@@ -1,0 +1,67 @@
+# Rauthy configuration, shared by local and production.
+#
+# Everything that differs between the two is supplied as an environment
+# variable instead (Rauthy documents an override for every key), so there is
+# one file to reason about rather than two that drift apart. Those are:
+#
+#   PUB_URL  PROXY_MODE  TRUSTED_PROXIES  COOKIE_MODE  RP_ID  RP_ORIGIN
+#
+# along with every secret: ENC_KEYS, ENC_KEY_ACTIVE, HQL_SECRET_RAFT,
+# HQL_SECRET_API, BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_PASSWORD_PLAIN.
+#
+# Rauthy is mounted at /auth on the *same* origin as the app rather than on a
+# subdomain of its own. Its routes all live under /auth already, and the issuer
+# is always `<pub_url>/auth/v1/`, so nothing needs rewriting. That keeps the
+# app's `connect-src 'self'` CSP intact, needs no second certificate or DNS
+# record, and lets the local setup have the same shape as production.
+
+[server]
+# Caddy terminates TLS in production and Vite proxies in dev; Rauthy itself
+# only ever speaks plain HTTP on the internal network.
+scheme = 'http'
+port_http = 8080
+
+[database]
+# Embedded SQLite-alike. A separate Postgres for one user would cost more
+# memory than the identity provider.
+hiqlite = true
+
+[cluster]
+node_id = 1
+nodes = ['1 localhost:8100 localhost:8200']
+
+[access]
+# Rauthy's own root would otherwise answer requests; it never sees them here,
+# because Caddy and Vite only route /auth/* to it.
+redirect_root_to_account = false
+
+[user_registration]
+# One user, created by bootstrap. Note this has to be set explicitly: the
+# default is `false`, but the config.toml that Rauthy ships sets it to `true`,
+# so copying their example is what would open registration by accident.
+enable = false
+
+[lifetimes]
+# Access tokens are capped at 86400s (24h) by Rauthy — `access_token_lifetime`
+# is validated as `10 <= x <= 86400` — so a month-long access token is not
+# possible. A 30 day refresh token gets the same effect: the app refreshes
+# silently in the background and a password is only needed once a month.
+refresh_token_lifetime = '30d'
+
+# Default. Stated here because it is load-bearing: the signing keys rotate on
+# the 1st of each month and this cannot be disabled, so any consumer that
+# caches the JWKS must refetch when it sees an unknown `kid`. Superseded keys
+# are kept for 90 days, so tokens issued before a rotation stay verifiable.
+jwk_autorotate_cron = '0 30 3 1 * * *'
+
+[bootstrap]
+# Clients and users are declared as JSON in ./bootstrap, applied on first
+# start against an empty database. Keeping them in the repo means the local
+# and production setups cannot quietly differ.
+bootstrap_dir = 'bootstrap'
+
+[logging]
+level = 'info'
+# Rauthy sits behind a proxy that already logs; its own access log would only
+# duplicate that.
+level_access = 'off'
