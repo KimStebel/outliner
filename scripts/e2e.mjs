@@ -1007,6 +1007,42 @@ check(
   JSON.stringify(await focusedRowText(page)),
 )
 
+console.log('\nmiddle click opens a link too')
+// `click` fires only for the primary button, and these anchors sit inside a
+// contenteditable where the browser's own middle-button default is not "open
+// in a new tab" but, on Linux, pasting the primary selection into the row.
+const linkRow = page
+  .locator('[data-item-id]', { hasText: 'see https://a.test' })
+  .first()
+const textBeforeAux = await linkRow.textContent()
+const anchor = page.locator('.text a', { hasText: 'a.test' }).first()
+check(
+  'the anchor points where it should',
+  (await anchor.getAttribute('href')) === 'https://a.test/',
+  String(await anchor.getAttribute('href')),
+)
+
+for (const [button, label] of [
+  ['left', 'a left click opens a tab'],
+  ['middle', 'a middle click opens one too'],
+]) {
+  // Waiting for the event rather than sleeping: a tab that arrives late would
+  // otherwise be counted against the next click.
+  const appeared = context.waitForEvent('page', { timeout: 5000 }).catch(() => null)
+  await anchor.click({ button })
+  const tab = await appeared
+  // Only that a tab opened: the host is a reserved TLD that does not resolve,
+  // so it lands on Chrome's error page. Where it pointed is asserted above.
+  check(label, tab !== null)
+  await tab?.close()
+}
+
+check(
+  'and the middle click put nothing into the row',
+  (await linkRow.textContent()) === textBeforeAux,
+  JSON.stringify(await linkRow.textContent()),
+)
+
 console.log('\na dangerous scheme is never turned into a link')
 await page.keyboard.press('End')
 await page.keyboard.press('Enter')

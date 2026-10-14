@@ -158,9 +158,16 @@ shows the result.
   localStorage — one copy, as a way back from a surprise, not a history.
 - A server copy that fails validation is **ignored rather than adopted**, so a
   corrupt file cannot destroy a good local document.
-- `401` is its own state, not a retry loop: it offers a **Sign in** action that
-  opens the API as a _navigation_, which is what makes the browser show its
-  basic-auth prompt. A `fetch` that gets a 401 does not reliably raise it.
+- Clicks on a link are handled explicitly, including middle click: `click` fires
+  only for the primary button, and inside a `contenteditable` the browser's own
+  middle-button default is not "open in a new tab" but, on Linux, pasting the
+  primary selection into the row. The pointerdown that keeps a tap on a link
+  from focusing the row is suppressed for the primary button only, so the right
+  button keeps its menu.
+
+`401` is its own state, not a retry loop: it offers a **Sign in** action that
+opens the API as a _navigation_, which is what makes the browser show its
+basic-auth prompt. A `fetch` that gets a 401 does not reliably raise it.
 
 The flush on hide is a plain `fetch`, deliberately not `keepalive`: keepalive
 bodies are capped at 64KB, which this document can exceed, so it would fail

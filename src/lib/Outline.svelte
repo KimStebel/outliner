@@ -516,6 +516,23 @@
    * Open a link rather than letting `contenteditable` swallow the click.
    */
   function handleClick(event: MouseEvent): void {
+    openLink(event)
+  }
+
+  /**
+   * Middle click, which `click` does not cover — it fires only for the
+   * primary button.
+   *
+   * Handled rather than left to the browser because these anchors sit inside
+   * a `contenteditable`, where the default for the middle button is not "open
+   * in a new tab" but, on Linux, pasting the primary selection into the row.
+   */
+  function handleAuxClick(event: MouseEvent): void {
+    if (event.button !== 1) return
+    openLink(event)
+  }
+
+  function openLink(event: MouseEvent): void {
     const anchor = linkFrom(event.target)
     if (anchor === null) return
     event.preventDefault()
@@ -535,7 +552,11 @@
     if (linkFrom(event.target) !== null) {
       // Suppressing the default keeps focus out of the row, so tapping a link
       // does not also open the keyboard over the page it is about to leave.
-      event.preventDefault()
+      //
+      // Only for the primary button. Suppressing it for the others took the
+      // browser's own handling away with it, which is why a middle click used
+      // to do nothing at all, and a right click would lose its menu.
+      if (event.button === 0) event.preventDefault()
       return
     }
     if (event.target !== event.currentTarget) return
@@ -719,6 +740,7 @@
   oninput={handleInput}
   onpaste={handlePaste}
   onclick={handleClick}
+  onauxclick={handleAuxClick}
   onpointerdown={handleBackgroundPointerDown}
   onfocusin={handleFocusIn}
   onfocusout={handleFocusOut}
