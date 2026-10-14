@@ -6,14 +6,14 @@
    * reads as "saved". Anything that needs attention stays until it resolves.
    */
   import type { SyncStatus } from './sync'
-  import { SIGN_IN_URL } from './httpSync'
 
   interface Props {
     status: SyncStatus
     onacknowledge: () => void
+    onsignin: () => void
   }
 
-  let { status, onacknowledge }: Props = $props()
+  let { status, onacknowledge, onsignin }: Props = $props()
 
   const label = $derived.by(() => {
     if (status.state === 'unauthorized') return 'Sign in'
@@ -30,19 +30,13 @@
     if (status.state === 'saving' || status.state === 'pending') return 'busy'
     return 'good'
   })
-
-  // A navigation, not a fetch: that is what makes the browser show its
-  // basic-auth prompt.
-  function signIn(): void {
-    window.open(SIGN_IN_URL, '_blank', 'noopener,noreferrer')
-  }
 </script>
 
 {#if status.state === 'unauthorized'}
   <button
     class="status {tone}"
-    onclick={signIn}
-    title="The server rejected the stored credentials"
+    onclick={onsignin}
+    title="Sign in to keep this device in sync"
   >
     <span class="dot"></span>{label}
   </button>

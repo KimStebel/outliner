@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createHttpTransport, DOC_URL } from './httpSync'
+import { createHttpTransport, DOC_URL, type TokenSource } from './httpSync'
+import type { TokenResult } from './auth'
 
 /**
  * This module is the seam between two halves that are each tested against a
@@ -182,5 +183,113 @@ describe('store', () => {
     expect(calls[0]?.init.method).toBe('PUT')
     expect(calls[0]?.init.body).toBe('{"doc":1}')
     expect(headerOf(calls[0], 'Content-Type')).toBe('application/json')
+  })
+})
+
+describe('authorization', () => {
+  /** A token source scripted with what each call should return. */
+  function source(
+    results: TokenResult[],
+    renewals: TokenResult[] = [],
+  ): TokenSource {
+    return {
+      token: async () => results.shift() ?? { kind: 'none' },
+      forceRenew: async () => renewals.shift() ?? { kind: 'signInRequired' },
+    }
+  }
+
+  it('attaches the bearer token', async () => {
+    const calls = mockFetch([reply(200, { etag: '"v1"', body: '{}' })])
+    await createHttpTransport({
+      auth: source([{ kind: 'token', value: 'abc' }]),
+    }).load(null)
+    expect(headerOf(calls[0], 'Authorization')).toBe('Bearer abc')
+  })
+
+  it('attaches it to a write as well, alongside the precondition', async () => {
+    const calls = mockFetch([reply(204, { etag: '"v2"' })])
+    await createHttpTransport({
+      auth: source([{ kind: 'token', value: 'abc' }]),
+    }).store('{}', '"v1"')
+    expect(headerOf(calls[0], 'Authorization')).toBe('Bearer abc')
+    expect(headerOf(calls[0], 'If-Match')).toBe('"v1"')
+  })
+
+  it('sends no authorization at all when there is no session', async () => {
+    // Not an error while the move off basic auth is in progress: the proxy in
+    // front may still accept the request, and the 401 if it does not is what
+    // prompts a sign-in.
+    const calls = mockFetch([reply(200, { etag: '"v1"', body: '{}' })])
+    await createHttpTransport({ auth: source([{ kind: 'none' }]) }).load(null)
+    expect(headerOf(calls[0], 'Authorization')).toBeUndefined()
+  })
+
+  it('needs a sign-in without even trying, once the session is unrecoverable', async () => {
+    const calls = mockFetch([])
+    const result = await createHttpTransport({
+      auth: source([{ kind: 'signInRequired' }]),
+    }).load(null)
+    expect(result).toEqual({ kind: 'unauthorized' })
+    // No point asking the server: there is nothing to send it.
+    expect(calls).toHaveLength(0)
+  })
+
+  it('counts an unreachable sign-in service as being offline', async () => {
+    // Retryable, and not something to send the user to a login page for.
+    mockFetch([])
+    const result = await createHttpTransport({
+      auth: source([{ kind: 'unreachable' }]),
+    }).load(null)
+    expect(result).toMatchObject({ kind: 'failed', offline: true })
+  })
+
+  it('renews once and retries when a 401 arrives anyway', async () => {
+    // The local view of expiry can be wrong — a clock that moved, a device
+    // resumed from sleep — so one forced renewal beats a needless sign-in.
+    const calls = mockFetch([reply(401), reply(200, { etag: '"v1"', body: '{}' })])
+    const result = await createHttpTransport({
+      auth: source(
+        [{ kind: 'token', value: 'stale' }],
+        [{ kind: 'token', value: 'fresh' }],
+      ),
+    }).load(null)
+
+    expect(result).toMatchObject({ kind: 'document' })
+    expect(headerOf(calls[0], 'Authorization')).toBe('Bearer stale')
+    expect(headerOf(calls[1], 'Authorization')).toBe('Bearer fresh')
+  })
+
+  it('gives up after one retry rather than looping', async () => {
+    const calls = mockFetch([reply(401), reply(401)])
+    const result = await createHttpTransport({
+      auth: source(
+        [{ kind: 'token', value: 'stale' }],
+        [{ kind: 'token', value: 'fresh' }],
+      ),
+    }).load(null)
+    expect(result).toEqual({ kind: 'unauthorized' })
+    expect(calls).toHaveLength(2)
+  })
+
+  it('asks for a sign-in when the renewal itself fails', async () => {
+    const calls = mockFetch([reply(401)])
+    const result = await createHttpTransport({
+      auth: source(
+        [{ kind: 'token', value: 'stale' }],
+        [{ kind: 'signInRequired' }],
+      ),
+    }).store('{}', '"v1"')
+    expect(result).toEqual({ kind: 'unauthorized' })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('does not retry a 401 when it never had a token', async () => {
+    // There is nothing to renew, so the 401 is the answer.
+    const calls = mockFetch([reply(401)])
+    const result = await createHttpTransport({
+      auth: source([{ kind: 'none' }]),
+    }).load(null)
+    expect(result).toEqual({ kind: 'unauthorized' })
+    expect(calls).toHaveLength(1)
   })
 })

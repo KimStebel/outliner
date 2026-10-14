@@ -37,8 +37,10 @@ npm install
 | `npm run icons`        | Regenerate the app icons into `public/`     |
 | `npm run deploy`       | Build and push to the production server     |
 | `npm run smoke`        | Check a deployment landed (read-only)       |
-| `npm run auth`         | Start Rauthy locally (`--reset` to wipe it) |
+| `npm run auth`         | Start Rauthy alone (`--reset` to wipe it)   |
+| `npm run stack`        | The whole stack locally, as production runs |
 | `npm run verify:oidc`  | Prove the token shape against real Rauthy   |
+| `npm run verify:stack` | Prove the auth rules through Caddy          |
 | `npm run test:watch`   | Unit tests in watch mode                    |
 | `npm run check`        | Typecheck (`svelte-check` + `tsc`)          |
 | `npm run format`       | Format in place                             |
@@ -203,11 +205,30 @@ there in production, the Vite proxy does locally.
 
 ### Running it locally
 
+Two ways, for two kinds of question.
+
 ```sh
-npm run auth          # Rauthy on 8081, proxied to /auth by the dev server
-npm run dev
-npm run verify:oidc   # the whole flow, end to end
+npm run stack         # Caddy + backend + Rauthy, exactly as production runs
+npm run verify:stack
 ```
+
+`npm run stack` is the one to reach for when the question involves the proxy:
+the auth rules, the headers, the service worker, compression and ETags. It
+uses the same Caddyfile, the same images and the same routes as production —
+only the address differs (`:8080` over plain HTTP rather than a hostname with
+a certificate).
+
+```sh
+npm run auth          # Rauthy alone, proxied to /auth by the dev server
+npm run dev
+npm run verify:oidc
+```
+
+That second pair is the faster loop for working on the app itself, with HMR.
+
+Bootstrap data is applied with a plain `INSERT` against an empty database, so
+editing `deploy/rauthy/bootstrap/*.json` does nothing to a database that
+already exists. Pass `--reset` after changing it.
 
 Bootstrap data is applied with a plain `INSERT` against an empty database, so
 editing `deploy/rauthy/bootstrap/*.json` does nothing to a database that
@@ -216,6 +237,27 @@ already exists. Use `npm run auth -- --reset` after changing it.
 `deploy/rauthy/config.toml` is shared by local and production; everything that
 differs between them — `PUB_URL`, `PROXY_MODE`, `COOKIE_MODE`, `RP_ID`,
 `RP_ORIGIN`, and every secret — arrives as an environment override instead.
+
+### How a request is authenticated
+
+Mid-move, so there are two ways in:
+
+- A **bearer token** is validated by the backend (`backend/src/auth.rs`)
+  against Rauthy's published keys. Caddy deliberately does _not_ ask such a
+  request for basic credentials — it would refuse it before the backend ever
+  saw the token — which is what the `@unauthenticated` matcher in the
+  Caddyfile is for.
+- **Anything else** has to pass Caddy's basic auth, which is what keeps a
+  client that has not signed in yet working. That half goes away with the
+  cut-over.
+
+Only Ed25519 is accepted and the algorithm is never taken from the token. The
+classic JWT failures — `alg: none`, an RSA public key replayed as an HMAC
+secret — all come from letting the token choose how it gets verified.
+
+And signature checking is not authorisation: a valid token only proves Rauthy
+issued it to _somebody_. `AUTH_SUBJECTS` says which somebody. Without that,
+turning on self sign-up would hand write access to anyone who registered.
 
 ### Two things that are easy to get wrong
 
@@ -282,6 +324,7 @@ Three layers, each against something it owns:
 | `cargo test` / `npm test` | nothing — pure logic and a temp dir      | nothing             |
 | `npm run e2e`             | a preview server and a backend it starts | its own scratch dir |
 | `npm run verify:oidc`     | a local Rauthy it expects to be running  | its own database    |
+| `npm run verify:stack`    | the whole local stack, through Caddy     | its own database    |
 | `npm run smoke`           | the real deployment                      | **nothing**         |
 
 `npm run e2e` starts a real sync backend on a temporary directory, so the 147
@@ -306,6 +349,13 @@ which claim marks an access token, whether Ed25519 verification against the
 published JWKS actually works. It asserts all of them against a real Rauthy
 before any of it is written in Rust, where the same mistake is far harder to
 see. Two of those details were wrong when first read from the docs.
+
+`npm run verify:stack` covers what only exists once everything is wired
+together, and it has earned its place twice over. It caught the backend's data
+volume arriving owned by root — production only worked because the deploy
+script chowned a host directory — and it caught `fetch` being stored unbound,
+which throws `Illegal invocation` in a browser and is perfectly happy in Node,
+so all 322 unit tests passed while signing in could not work at all.
 
 The build-identity check is the one that earns the suite its keep: "the deploy
 silently did not take effect" has happened twice here, once from a file

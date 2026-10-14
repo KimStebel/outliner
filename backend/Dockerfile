@@ -10,6 +10,11 @@ FROM alpine:3
 # Unprivileged, and with no home or shell: this process only reads and writes
 # one file.
 RUN adduser -D -H -u 10001 app
+# Created here, owned by the user that runs: a named volume inherits the
+# ownership of the image's directory, and without this it arrives owned by
+# root and every write fails with EACCES. A bind mount still has to be chowned
+# on the host, which is what the deploy script does.
+RUN mkdir -p /data && chown 10001:10001 /data
 COPY --from=build /src/target/release/outliner-sync /usr/local/bin/outliner-sync
 USER 10001:10001
 ENV DATA_DIR=/data \

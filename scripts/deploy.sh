@@ -71,10 +71,15 @@ unset PW
 
 # Written as a Caddyfile snippet rather than environment variables: compose
 # interpolates env_file values and would eat the `$` sequences in the hash.
+#
+# Just the credentials, not the whole `basic_auth` block: the Caddyfile wraps
+# this in one with a matcher, so that a request carrying a bearer token is not
+# also asked for a password — Caddy would refuse it before the backend could
+# check the token.
 AUTH_SNIPPET=$(mktemp)
 trap 'rm -f "$AUTH_SNIPPET"' EXIT
 chmod 600 "$AUTH_SNIPPET"
-printf 'basic_auth {\n\t%s %s\n}\n' "$BASIC_USER" "$BASIC_HASH" >"$AUTH_SNIPPET"
+printf '%s %s\n' "$BASIC_USER" "$BASIC_HASH" >"$AUTH_SNIPPET"
 sshpass -e rsync -az --chmod=F600 \
   -e "ssh ${SSH_OPTS[*]}" \
   "$AUTH_SNIPPET" "$USER@$HOST:$REMOTE_DIR/auth.caddy"

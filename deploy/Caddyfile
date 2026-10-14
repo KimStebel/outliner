@@ -1,30 +1,44 @@
-outliner.stebel.kim {
+# Shared by local and production.
+#
+# The address comes from the environment, and is the only difference between
+# the two: a bare hostname in production, which Caddy gets a certificate for,
+# and `:8080` locally, which matches any host on that port and serves plain
+# HTTP. Everything else — the routes, the auth rules, the headers — is
+# identical, so what is tested locally is what runs.
+{$SITE_ADDRESS} {
 	encode zstd gzip
 
-	header {
-		# Caddy serves this over https only and redirects http, so pin clients
-		# to https too. No `preload` — that is a one-way door for the domain.
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "no-referrer"
-		X-Frame-Options "DENY"
-		# The app loads nothing from anywhere else and has no inline scripts,
-		# so everything can be locked to self. `style-src` needs unsafe-inline
-		# because row depth and the keyboard dock are positioned with inline
-		# style attributes.
-		Content-Security-Policy "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-		-Server
+	# The identity provider.
+	#
+	# Mounted here rather than on a subdomain of its own: all of its routes
+	# already live under /auth, and the issuer it advertises is
+	# `<this origin>/auth/v1/`, so nothing needs rewriting. That keeps the
+	# app's `connect-src 'self'` intact and saves a second certificate.
+	#
+	# Deliberately gets none of the headers set below. Rauthy sets its own,
+	# and ours would be *added* to them rather than replacing them — two
+	# content-security policies are intersected, and `form-action 'none'` has
+	# no business being applied to somebody else's login page.
+	handle /auth/* {
+		reverse_proxy rauthy:8080
 	}
 
-	# The sync API. Auth lives here rather than in the service, so the service
-	# stays a dumb document store.
-	#
-	# The credentials are imported from a generated file rather than passed as
-	# environment variables: compose interpolates env_file values, and a bcrypt
-	# hash is full of `$`, so it arrives mangled. Caddy's import is textual and
-	# leaves it alone.
+	# The sync API.
 	handle /api/* {
-		import /etc/caddy/auth.caddy
+		# Two ways to be authenticated, while that is being moved.
+		#
+		# A bearer token is validated by the backend against the provider's
+		# published keys, so basic auth must not be demanded of it as well:
+		# Caddy would refuse the request before the backend ever saw the
+		# token. Everything else still has to pass basic auth, which is what
+		# keeps a client that has not signed in yet working.
+		@unauthenticated {
+			not header Authorization Bearer*
+		}
+		basic_auth @unauthenticated {
+			import /etc/caddy/auth.caddy
+		}
+
 		# Note that `encode` above rewrites the ETag of anything it compresses,
 		# appending `-gzip`. The backend compares entity tags on the part that
 		# identifies the document, so a tag handed to a browser here is still
@@ -33,6 +47,22 @@ outliner.stebel.kim {
 	}
 
 	handle {
+		header {
+			# Caddy serves this over https only and redirects http, so pin clients
+			# to https too. No `preload` — that is a one-way door for the domain.
+			Strict-Transport-Security "max-age=31536000; includeSubDomains"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "no-referrer"
+			X-Frame-Options "DENY"
+			# The app loads nothing from anywhere else and has no inline scripts,
+			# so everything can be locked to self — including the identity
+			# provider, which shares this origin. `style-src` needs unsafe-inline
+			# because row depth and the keyboard dock are positioned with inline
+			# style attributes.
+			Content-Security-Policy "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+			-Server
+		}
+
 		root * /srv
 
 		# Asset filenames contain a content hash, so they can be cached forever.

@@ -139,6 +139,11 @@ self.addEventListener('fetch', (event) => {
   // GET-only — kept correctly reporting that it had changed.
   if (url.pathname.startsWith('/api/')) return
 
+  // The identity provider shares this origin, so without this the navigate
+  // branch below would answer its login page with the app shell out of
+  // cache, and signing in could never finish.
+  if (url.pathname.startsWith('/auth/')) return
+
   // Every route renders the same shell, so a navigation is always answered
   // from cache first. That is what makes a cold start work with no network.
   if (request.mode === 'navigate') {

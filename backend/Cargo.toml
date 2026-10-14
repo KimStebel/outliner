@@ -13,9 +13,20 @@ httpdate = "1"
 # nothing about the document's shape.
 serde_json = "1"
 
+# Bearer token validation. Deliberately small: only Ed25519 is accepted, so
+# there is no need for a general JWT library and the algorithm agility that
+# comes with it.
+ed25519-dalek = "2"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+# Fetching the provider's public keys. Plain HTTP over the container network,
+# so no TLS stack is pulled in, and hyper is already here by way of axum.
+hyper = "1"
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
 tempfile = "3"
 
 [profile.release]

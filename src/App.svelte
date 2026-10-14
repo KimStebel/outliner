@@ -12,6 +12,7 @@
   import { SyncEngine, type SyncStatus } from './lib/sync'
   import { createHttpTransport } from './lib/httpSync'
   import { reviveEnvelope } from './lib/persist'
+  import { Auth } from './lib/auth'
 
   const storage = createDocStorage({
     backend: createBrowserStorage(),
@@ -94,8 +95,10 @@
     replacedFromServer: false,
   })
 
+  const auth = new Auth()
+
   const sync = new SyncEngine({
-    transport: createHttpTransport(),
+    transport: createHttpTransport({ auth }),
     snapshot: () => JSON.stringify(envelope(store.doc)),
     adopt: adoptFromServer,
     initialEtag: readEtag(),
@@ -182,6 +185,30 @@
   // fail exactly when it matters. The page is normally still alive long
   // enough for an ordinary request. If it is not, nothing is lost — the edit
   // is in localStorage and uploads on next launch.
+  /**
+   * Send the browser off to sign in.
+   *
+   * A navigation rather than a popup: the provider is on this origin and
+   * redirects straight back, and a popup would be blocked on a phone.
+   */
+  async function signIn(): Promise<void> {
+    window.location.assign(await auth.signInUrl())
+  }
+
+  /**
+   * Finish a sign-in before sync starts, so the first request already carries
+   * a token rather than making one pointless unauthorised attempt.
+   *
+   * The code is cleared from the address bar whether or not it worked: it is
+   * single-use, so a reload that tried to spend it again would only fail, and
+   * leaving it there means a bookmark or a shared link carries it.
+   */
+  async function resumeSession(): Promise<void> {
+    if (await auth.completeSignIn(window.location.search)) {
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+  }
+
   $effect(() => {
     const flush = (): void => {
       storage.flush()
@@ -194,7 +221,7 @@
     }
     window.addEventListener('pagehide', flush)
     document.addEventListener('visibilitychange', onVisibility)
-    void sync.start()
+    void resumeSession().then(() => sync.start())
     return () => {
       window.removeEventListener('pagehide', flush)
       document.removeEventListener('visibilitychange', onVisibility)
@@ -212,6 +239,7 @@
       sync.acknowledgeReplacement()
       syncStatus = sync.current
     }}
+    onsignin={() => void signIn()}
   />
   <div class="actions">
     <button

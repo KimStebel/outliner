@@ -1,37 +1,101 @@
 /**
  * The HTTP side of sync.
  *
- * Credentials are never handled here. The API sits behind HTTP basic auth, so
- * the browser attaches them itself once it has them — which is also why a
- * `401` is reported as its own result rather than a failure: the fix is for
- * the user to sign in, not for us to retry.
+ * A bearer token is attached when there is one. There may not be: while auth
+ * is moving off the reverse proxy, a request with no token can still be
+ * accepted by it, so having no session is not an error here — the `401` that
+ * comes back if it is not accepted is what asks the user to sign in.
+ *
+ * `401` stays its own result rather than a failure, because the fix is for the
+ * user to act, not for us to retry.
  */
 
+import type { TokenResult } from './auth'
 import type { SyncTransport } from './sync'
 
 export const DOC_URL = '/api/doc'
-/**
- * Visiting this as a *navigation* makes the browser show its basic-auth
- * prompt. A `fetch` that gets a 401 does not reliably raise it, so this is
- * what the "sign in" action opens.
- */
-export const SIGN_IN_URL = '/api/health'
 
-export function createHttpTransport(url: string = DOC_URL): SyncTransport {
+/** What this needs of `Auth`, which is all a test has to stand in for. */
+export interface TokenSource {
+  token(): Promise<TokenResult>
+  forceRenew(): Promise<TokenResult>
+}
+
+export interface TransportOptions {
+  url?: string
+  /** Omitted before the user has ever signed in, and in tests. */
+  auth?: TokenSource
+}
+
+type Attempt =
+  | { kind: 'response'; response: Response }
+  | { kind: 'unauthorized' }
+  | { kind: 'offline'; message: string }
+
+/**
+ * Make a request with whatever authorization is available.
+ *
+ * A `401` while holding a token that looked current is retried once after a
+ * forced renewal: the local view of when a token expires can be wrong — a
+ * clock that moved, a device resumed from sleep — and one extra round trip is
+ * cheaper than sending the user to a login page needlessly.
+ */
+async function send(
+  auth: TokenSource | undefined,
+  run: (headers: Record<string, string>) => Promise<Response>,
+): Promise<Attempt> {
+  const held =
+    auth === undefined ? ({ kind: 'none' } as TokenResult) : await auth.token()
+
+  if (held.kind === 'signInRequired') return { kind: 'unauthorized' }
+  if (held.kind === 'unreachable') {
+    return { kind: 'offline', message: 'the sign-in service could not be reached' }
+  }
+
+  const bearer = (token: string): Record<string, string> => ({
+    Authorization: `Bearer ${token}`,
+  })
+
+  let response: Response
+  try {
+    response = await run(held.kind === 'token' ? bearer(held.value) : {})
+  } catch (error) {
+    return { kind: 'offline', message: describe(error) }
+  }
+
+  if (response.status !== 401 || held.kind !== 'token' || auth === undefined) {
+    return { kind: 'response', response }
+  }
+
+  const renewed = await auth.forceRenew()
+  if (renewed.kind !== 'token') return { kind: 'unauthorized' }
+  try {
+    return { kind: 'response', response: await run(bearer(renewed.value)) }
+  } catch (error) {
+    return { kind: 'offline', message: describe(error) }
+  }
+}
+
+export function createHttpTransport(options: TransportOptions = {}): SyncTransport {
+  const url = options.url ?? DOC_URL
+  const auth = options.auth
+
   return {
     async load(etag) {
-      let response: Response
-      try {
-        response = await fetch(url, {
+      const attempt = await send(auth, (extra) =>
+        fetch(url, {
           method: 'GET',
           // Belt and braces with the service worker's /api bypass: the HTTP
           // cache must not answer a sync request either.
           cache: 'no-store',
-          headers: etag === null ? {} : { 'If-None-Match': etag },
-        })
-      } catch (error) {
-        return { kind: 'failed', offline: true, message: describe(error) }
+          headers: etag === null ? extra : { ...extra, 'If-None-Match': etag },
+        }),
+      )
+      if (attempt.kind === 'unauthorized') return { kind: 'unauthorized' }
+      if (attempt.kind === 'offline') {
+        return { kind: 'failed', offline: true, message: attempt.message }
       }
+      const response = attempt.response
 
       if (response.status === 304) return { kind: 'unchanged' }
       if (response.status === 404) return { kind: 'absent' }
@@ -63,25 +127,24 @@ export function createHttpTransport(url: string = DOC_URL): SyncTransport {
     },
 
     async store(body, etag) {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
+      const attempt = await send(auth, (extra) => {
+        const headers: Record<string, string> = {
+          ...extra,
+          'Content-Type': 'application/json',
+        }
+        // Omitted only for the very first write; the server accepts that just
+        // once, when it holds nothing.
+        if (etag !== null) headers['If-Match'] = etag
+        return fetch(url, { method: 'PUT', cache: 'no-store', headers, body })
+      })
+      if (attempt.kind === 'unauthorized') return { kind: 'unauthorized' }
+      if (attempt.kind === 'offline') {
+        return { kind: 'failed', offline: true, message: attempt.message }
       }
-      // Omitted only for the very first write; the server accepts that just
-      // once, when it holds nothing.
-      if (etag !== null) headers['If-Match'] = etag
+      const response = attempt.response
 
-      let response: Response
-      try {
-        response = await fetch(url, {
-          method: 'PUT',
-          cache: 'no-store',
-          headers,
-          body,
-        })
-      } catch (error) {
-        return { kind: 'failed', offline: true, message: describe(error) }
-      }
-
+      // Reached when there was no token to retry with, or the retry was
+      // refused too.
       if (response.status === 401) return { kind: 'unauthorized' }
       // 412: the version being replaced is no longer current.
       // 428: a precondition was required and none was sent, which means the

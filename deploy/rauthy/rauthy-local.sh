@@ -17,64 +17,16 @@ HEALTH=http://127.0.0.1:8081/auth/v1/health
 # Must agree with config.toml -> issuer = <scheme>://<pub_url>/auth/v1/
 ISSUER=http://localhost:8080/auth/v1/
 
-# The app's user, as opposed to Rauthy's admin.
-#
-# `id` is pinned so `sub` is a known, stable value: the backend authorises
-# against it, and local and production should not disagree about who the user
-# is. A subject identifier is not a secret.
-USER_ID=outlinerkimstebel0000001
-USER_EMAIL=kim@localhost
-USER_PASSWORD=LocalUserPassword123!
-
-# Rauthy reads bootstrap data from one fixed directory, so the local extras go
-# into a generated copy of the committed one, mounted at the same place inside
-# the container. bootstrap/clients.json stays the single definition of the real
-# client — local cannot drift from production by editing a second copy of it.
-LOCAL_DIR=bootstrap-local
+# shellcheck source=local-user.env
+source ./local-user.env
 
 if [[ "${1:-}" == "--reset" ]]; then
 	echo "==> Removing the local Rauthy database"
 	docker compose -f "$COMPOSE" down -v
 fi
 
-echo "==> Generating $LOCAL_DIR"
-rm -rf "$LOCAL_DIR"
-mkdir -p "$LOCAL_DIR"
-
-# The user is generated rather than committed because production needs this
-# same file with a real password, and that must never be in the repo.
-cat >"$LOCAL_DIR/users.json" <<EOF
-[
-  {
-    "id": "$USER_ID",
-    "email": "$USER_EMAIL",
-    "given_name": "Kim",
-    "password": { "Plain": "$USER_PASSWORD" },
-    "roles": ["user"],
-    "enabled": true,
-    "email_verified": true
-  }
-]
-EOF
-
-# The real client, plus one that exists only to make the refresh flow testable.
-#
-# A refresh token's `nbf` is `now + access_token_lifetime - 60s`, so with the
-# real client's 24h tokens it cannot be redeemed for nearly a day. Giving the
-# probe a 70 second access token puts its `nbf` 10 seconds out, which a test
-# can wait for — and it exercises the real nbf rule rather than switching it
-# off, which is what `disable_refresh_token_nbf` would do.
-python3 - "$LOCAL_DIR" <<'PY'
-import json, sys
-clients = json.load(open('bootstrap/clients.json'))
-probe = dict(next(c for c in clients if c['id'] == 'outliner'))
-probe.update(
-    id='outliner-refresh-probe',
-    name='Outliner refresh probe',
-    access_token_lifetime=70,
-)
-json.dump(clients + [probe], open(f'{sys.argv[1]}/clients.json', 'w'), indent=2)
-PY
+echo "==> Generating bootstrap-local"
+./make-bootstrap-local.sh
 
 echo "==> Validating config.toml"
 # Catches a bad key or a malformed encryption key before the container starts,
@@ -126,7 +78,7 @@ Rauthy is up.
   app + auth    http://localhost:8080/auth/v1/   (through the Vite dev server)
   direct        http://127.0.0.1:8081/auth/v1/
   admin UI      http://localhost:8080/auth/v1/admin
-                admin@localhost / LocalAdminPassword123!
+                $ADMIN_EMAIL / $ADMIN_PASSWORD
   app user      $USER_EMAIL / $USER_PASSWORD
 
 Start the dev server with 'npm run dev' for the /auth proxy to work,
