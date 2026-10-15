@@ -12,7 +12,12 @@
 # generated here on the first run. Do not regenerate prod-rauthy-env: the
 # provider's database is encrypted with those keys.
 #
-# Usage: ./scripts/deploy.sh
+# Usage: ./scripts/deploy.sh [--first-run]
+#
+# --first-run generates the identity provider's secrets and the account
+# password. Only correct when there is no Rauthy database yet: bootstrap data
+# is applied to an empty database and nothing else, so generating these against
+# a live deployment produces credentials that silently do not work.
 
 set -euo pipefail
 
@@ -29,12 +34,49 @@ RAUTHY_USER=prod-rauthy-user
 #   secret: <secret access key>
 R2_FILE=prod-cloudflare-r2
 R2_BUCKET=outliner-backups
+
+# Generating a secret is only ever right for a deployment that does not exist
+# yet, so it takes an explicit flag.
+#
+# Without this, a missing file was silently replaced with a fresh one — which
+# is a trap, because Rauthy applies bootstrap data only to an empty database.
+# A regenerated prod-rauthy-user therefore holds a password that was never set
+# and will not work, while claiming to be the password; and a regenerated
+# prod-rauthy-env holds encryption keys that cannot read the existing
+# database at all. Both failures are silent at deploy time.
+#
+# Moving these into a password manager and deleting the local copies — which
+# is exactly what the backup notes tell you to do — is enough to trigger it.
+FIRST_RUN=false
+if [[ "${1:-}" == "--first-run" ]]; then
+  FIRST_RUN=true
+fi
+
 for required in "$ENV_FILE" "$R2_FILE"; do
   if [[ ! -f $required ]]; then
     echo "Missing $required." >&2
     exit 1
   fi
 done
+
+if [[ $FIRST_RUN == false ]]; then
+  for required in "$RAUTHY_ENV" "$RAUTHY_USER"; do
+    if [[ ! -f $required ]]; then
+      cat >&2 <<MISSING
+Missing $required.
+
+Restore it from your password manager. Do not let it be regenerated: these
+only take effect when Rauthy initialises an empty database, so a new one
+would not match what is deployed — a new password would simply not work, and
+new encryption keys could not read the existing database.
+
+If this really is a brand new deployment with no Rauthy database yet:
+  ./scripts/deploy.sh --first-run
+MISSING
+      exit 1
+    fi
+  done
+fi
 
 field() { sed -n "s/^$1:[[:space:]]*//p" "$ENV_FILE" | head -1; }
 
@@ -86,7 +128,7 @@ enc_key() {
 }
 
 if [[ ! -f $RAUTHY_ENV ]]; then
-  echo "==> Generating $RAUTHY_ENV (first run; keep this file)"
+  echo "==> Generating $RAUTHY_ENV (keep this file; put it in your password manager)"
   umask 077
   key_id=$(rand 16 8)
   cat >"$RAUTHY_ENV" <<ENVEOF
@@ -104,7 +146,7 @@ ENVEOF
 fi
 
 if [[ ! -f $RAUTHY_USER ]]; then
-  echo "==> Generating $RAUTHY_USER (first run; keep this file)"
+  echo "==> Generating $RAUTHY_USER (keep this file; put it in your password manager)"
   umask 077
   printf 'kim.stebel@gmail.com:%s\n' "$(rand 32 24)" >"$RAUTHY_USER"
 fi
