@@ -7,6 +7,11 @@
 #   user: <user>
 #   password: <password>
 #
+# The identity provider's own secrets live in ./prod-rauthy-env and the single
+# account's password in ./prod-rauthy-user, both also gitignored and both
+# generated here on the first run. Do not regenerate prod-rauthy-env: the
+# provider's database is encrypted with those keys.
+#
 # Usage: ./scripts/deploy.sh
 
 set -euo pipefail
@@ -14,12 +19,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ENV_FILE=prod-env
-AUTH_FILE=prod-basic-auth
 # The identity provider's secrets, and the single account's password. Both
 # generated below if absent, then left alone.
 RAUTHY_ENV=prod-rauthy-env
 RAUTHY_USER=prod-rauthy-user
-for required in "$ENV_FILE" "$AUTH_FILE"; do
+for required in "$ENV_FILE"; do
   if [[ ! -f $required ]]; then
     echo "Missing $required." >&2
     exit 1
@@ -204,33 +208,6 @@ sshpass -e rsync -az --delete \
   --exclude target \
   -e "ssh ${SSH_OPTS[*]}" \
   backend/ "$USER@$HOST:$REMOTE_DIR/backend/"
-
-echo "==> Writing Caddy credentials"
-# Hashed locally with the same Caddy image that will verify it, so the
-# plaintext password never reaches the server at all — only the bcrypt hash.
-# `-e PW` takes the value from this process's environment rather than argv, so
-# it does not appear in `ps`.
-BASIC_USER=$(cut -d: -f1 "$AUTH_FILE")
-PW=$(cut -d: -f2- "$AUTH_FILE")
-export PW
-BASIC_HASH=$(docker run --rm -e PW caddy:2-alpine \
-  sh -c 'caddy hash-password --plaintext "$PW"')
-unset PW
-
-# Written as a Caddyfile snippet rather than environment variables: compose
-# interpolates env_file values and would eat the `$` sequences in the hash.
-#
-# Just the credentials, not the whole `basic_auth` block: the Caddyfile wraps
-# this in one with a matcher, so that a request carrying a bearer token is not
-# also asked for a password — Caddy would refuse it before the backend could
-# check the token.
-AUTH_SNIPPET=$(mktemp)
-trap 'rm -f "$AUTH_SNIPPET"' EXIT
-chmod 600 "$AUTH_SNIPPET"
-printf '%s %s\n' "$BASIC_USER" "$BASIC_HASH" >"$AUTH_SNIPPET"
-sshpass -e rsync -az --chmod=F600 \
-  -e "ssh ${SSH_OPTS[*]}" \
-  "$AUTH_SNIPPET" "$USER@$HOST:$REMOTE_DIR/auth.caddy"
 
 # The backend runs unprivileged, so its data directory must be writable by it.
 sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \

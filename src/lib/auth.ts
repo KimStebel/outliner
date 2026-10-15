@@ -44,9 +44,10 @@ export interface Tokens {
 export type TokenResult =
   /** Send this as the bearer token. */
   | { kind: 'token'; value: string }
-  /** No session at all. Make the request without one — during the move from
-   *  basic auth the proxy may still accept it, and if it does not the 401
-   *  comes back and the user is asked to sign in. */
+  /** No session at all. The request still goes out without a token, because a
+   *  backend with authentication switched off accepts it — that is how local
+   *  development runs. Against the real deployment it comes back 401 and the
+   *  user is asked to sign in. */
   | { kind: 'none' }
   /** There was a session but it cannot be renewed. */
   | { kind: 'signInRequired' }

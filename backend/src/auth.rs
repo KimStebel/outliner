@@ -109,13 +109,22 @@ struct KeyCache {
 }
 
 impl Auth {
-    /// Build from the environment, or `None` if `AUTH_ISSUER` is unset.
+    /// Build from the environment.
     ///
-    /// Unset means the service is still relying on the reverse proxy for
-    /// authentication, which is how this ran before tokens existed.
+    /// `None` only when `AUTH_DISABLED` says so, which the test harness uses
+    /// and nothing else should. Without an issuer and without that, this
+    /// returns an error rather than running: nothing else authenticates these
+    /// requests any more, so a missing configuration would mean handing the
+    /// document to anyone who asked.
     pub fn from_env() -> Result<Option<Self>, String> {
         let Ok(issuer) = env::var("AUTH_ISSUER") else {
-            return Ok(None);
+            if env::var("AUTH_DISABLED").is_ok_and(|value| value == "true") {
+                return Ok(None);
+            }
+            return Err("AUTH_ISSUER is not set, so no request could be \
+                        authenticated. Set it, or set AUTH_DISABLED=true to \
+                        run without any authentication at all."
+                .to_string());
         };
         let jwks_url = env::var("AUTH_JWKS_URL")
             .map_err(|_| "AUTH_ISSUER is set but AUTH_JWKS_URL is not".to_string())?;

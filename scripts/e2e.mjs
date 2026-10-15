@@ -225,6 +225,11 @@ function startBackend() {
       ...process.env,
       DATA_DIR: backendDir,
       BIND: `127.0.0.1:${BACKEND_PORT}`,
+      // This suite is about editing and sync, not about tokens, and the
+      // service refuses to start with no issuer rather than run unprotected.
+      // Auth has its own coverage: cargo test for the validation, and
+      // verify-stack.mjs for signing in through the real stack.
+      AUTH_DISABLED: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,

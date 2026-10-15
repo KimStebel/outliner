@@ -24,21 +24,13 @@
 	}
 
 	# The sync API.
+	#
+	# No authentication here any more: the backend validates the bearer token
+	# itself, against the provider's published keys. Caddy used to enforce
+	# basic auth in front, which is why the backend was allowed to trust a
+	# request that arrived without a token — that is gone, and the backend now
+	# refuses to start without an issuer configured.
 	handle /api/* {
-		# Two ways to be authenticated, while that is being moved.
-		#
-		# A bearer token is validated by the backend against the provider's
-		# published keys, so basic auth must not be demanded of it as well:
-		# Caddy would refuse the request before the backend ever saw the
-		# token. Everything else still has to pass basic auth, which is what
-		# keeps a client that has not signed in yet working.
-		@unauthenticated {
-			not header Authorization Bearer*
-		}
-		basic_auth @unauthenticated {
-			import /etc/caddy/auth.caddy
-		}
-
 		# Note that `encode` above rewrites the ETag of anything it compresses,
 		# appending `-gzip`. The backend compares entity tags on the part that
 		# identifies the document, so a tag handed to a browser here is still

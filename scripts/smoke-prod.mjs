@@ -14,13 +14,17 @@
  * Usage: npm run build && node scripts/smoke-prod.mjs [url]
  */
 
+import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { chromium, request } from 'playwright'
 
 const BASE = process.argv[2] ?? 'https://outliner.stebel.kim'
 const API = `${BASE}/api/doc`
+const CLIENT_ID = 'outliner'
 
-const [user, ...secret] = readFileSync('prod-basic-auth', 'utf8').trim().split(':')
+const [email, ...secret] = readFileSync('prod-rauthy-user', 'utf8')
+  .trim()
+  .split(':')
 const password = secret.join(':')
 
 let failures = 0
@@ -35,10 +39,72 @@ function check(label, condition, detail = '') {
   }
 }
 
-const api = await request.newContext({
-  httpCredentials: { username: user, password },
-})
 const anonymous = await request.newContext()
+
+/**
+ * Sign in for real, and come back with an access token.
+ *
+ * There is no other way to read the document now that basic auth is gone, so
+ * every run of this check also proves that signing in works — which nothing
+ * automated did before.
+ *
+ * Read-only throughout: the app is intercepted so it cannot load, because
+ * loading it would start sync, and sync writes.
+ */
+async function accessToken() {
+  const b64url = (buffer) => buffer.toString('base64url')
+  const verifier = b64url(randomBytes(32))
+  const challenge = b64url(createHash('sha256').update(verifier).digest())
+
+  const browser = await chromium.launch()
+  const page = await browser.newPage()
+  await page.route(
+    (url) => url.origin === BASE && !url.pathname.startsWith('/auth/'),
+    (route) => route.fulfill({ status: 200, body: 'intercepted' }),
+  )
+
+  const query = new URLSearchParams({
+    client_id: CLIENT_ID,
+    redirect_uri: `${BASE}/`,
+    response_type: 'code',
+    scope: 'openid email',
+    state: b64url(randomBytes(16)),
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  })
+
+  try {
+    await page.goto(`${BASE}/auth/v1/oidc/authorize?${query}`, {
+      waitUntil: 'networkidle',
+    })
+    const field = page.locator('input[type=password]')
+    await page.locator('input[type=email]').fill(email)
+    await page.locator('button[type=submit]').click()
+    await field.waitFor({ state: 'visible', timeout: 20_000 })
+    await field.fill(password)
+    await page.locator('button[type=submit]').click()
+    await page.waitForURL((url) => url.searchParams.has('code'), {
+      timeout: 20_000,
+    })
+    const code = new URL(page.url()).searchParams.get('code')
+    await browser.close()
+
+    const exchanged = await anonymous.post(`${BASE}/auth/v1/oidc/token`, {
+      form: {
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: `${BASE}/`,
+        client_id: CLIENT_ID,
+        code_verifier: verifier,
+      },
+    })
+    if (!exchanged.ok()) return null
+    return (await exchanged.json()).access_token ?? null
+  } catch {
+    await browser.close()
+    return null
+  }
+}
 
 console.log('\nreachable')
 const root = await anonymous.get(`${BASE}/`)
@@ -118,29 +184,30 @@ console.log('\nauth')
 const unauthenticated = await anonymous.get(API)
 check('the API refuses anonymous reads', unauthenticated.status() === 401)
 check(
-  'and challenges, so the browser can prompt',
-  /basic/i.test(unauthenticated.headers()['www-authenticate'] ?? ''),
+  'and asks for a bearer token, there being nothing else now',
+  /bearer/i.test(unauthenticated.headers()['www-authenticate'] ?? ''),
   unauthenticated.headers()['www-authenticate'] ?? '(absent)',
 )
-const wrong = await request.newContext({
-  httpCredentials: { username: 'nobody', password: 'wrong' },
+const legacyBasic = await anonymous.get(API, {
+  headers: {
+    Authorization: `Basic ${Buffer.from('kim:whatever').toString('base64')}`,
+  },
 })
-check('a wrong password is refused', (await wrong.get(API)).status() === 401)
-await wrong.dispose()
-check('the static site needs no auth', root.status() === 200)
-
+check('basic credentials no longer get anywhere', legacyBasic.status() === 401)
 const badBearer = await anonymous.get(API, {
   headers: { Authorization: 'Bearer not.a.real.token' },
 })
 check('a bearer token that does not verify is refused', badBearer.status() === 401)
-// The distinction matters: had Caddy demanded basic auth of a bearer request,
-// this would carry its challenge instead and the backend would never see a
-// token at all — which is to say nobody could ever sign in.
-check(
-  'by the backend rather than by Caddy, so bearer tokens get through',
-  /bearer/i.test(badBearer.headers()['www-authenticate'] ?? ''),
-  badBearer.headers()['www-authenticate'] ?? '(absent)',
-)
+check('the static site needs no auth', root.status() === 200)
+
+console.log('\nsigning in')
+// The only way to read the document now, so every run of this proves the
+// login flow works end to end — which nothing automated did before.
+const token = await accessToken()
+check('the whole login flow works against the live site', token !== null)
+const api = await request.newContext({
+  extraHTTPHeaders: token === null ? {} : { Authorization: `Bearer ${token}` },
+})
 
 console.log('\nthe identity provider')
 const providerHealth = await anonymous.get(`${BASE}/auth/v1/health`)
@@ -231,7 +298,9 @@ const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   hasTouch: true,
   isMobile: true,
-  httpCredentials: { username: user, password },
+  // No credentials: this browser is a device that has never signed in, which
+  // is what the app has to cope with. Sync reports that a sign-in is needed
+  // and the rest of the app still has to work.
 })
 
 // A structural guarantee that this suite cannot write, whatever the app does.

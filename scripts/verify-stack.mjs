@@ -21,7 +21,6 @@ const ORIGIN = 'http://localhost:8080'
 const CLIENT_ID = 'outliner'
 const EMAIL = 'kim@localhost'
 const PASSWORD = 'LocalUserPassword123!'
-const BASIC = `Basic ${Buffer.from('kim:LocalBasicPassword123!').toString('base64')}`
 
 let failures = 0
 let checks = 0
@@ -66,34 +65,24 @@ console.log('\nan unauthenticated request')
 const bare = await api('/api/doc')
 equal('is refused', bare.status, 401)
 check(
-  'by Caddy, which asks for basic credentials',
-  (bare.headers.get('WWW-Authenticate') ?? '').toLowerCase().includes('basic'),
+  'and asks for a bearer token, there being nothing else now',
+  (bare.headers.get('WWW-Authenticate') ?? '').toLowerCase().includes('bearer'),
   bare.headers.get('WWW-Authenticate') ?? 'no header',
 )
 
 console.log('\nbasic credentials')
-const withBasic = await api('/api/doc', { headers: { Authorization: BASIC } })
-check(
-  'still work, so a client that has not signed in keeps syncing',
-  withBasic.status !== 401,
-  `got ${withBasic.status}`,
-)
+const withBasic = await api('/api/doc', {
+  headers: {
+    Authorization: `Basic ${Buffer.from('kim:whatever').toString('base64')}`,
+  },
+})
+equal('no longer get anywhere', withBasic.status, 401)
 
-console.log('\na bearer token Caddy cannot check')
+console.log('\na bearer token that does not verify')
 const badBearer = await api('/api/doc', {
   headers: { Authorization: 'Bearer not.a.real.token' },
 })
 equal('is refused', badBearer.status, 401)
-// The distinction that proves Caddy's matcher works: had basic auth been
-// demanded of a bearer request, this would be Caddy's challenge instead and
-// the backend would never have seen the token at all.
-check(
-  'by the backend, not by Caddy',
-  (badBearer.headers.get('WWW-Authenticate') ?? '')
-    .toLowerCase()
-    .includes('bearer'),
-  badBearer.headers.get('WWW-Authenticate') ?? 'no header',
-)
 
 // -- headers -----------------------------------------------------------------
 

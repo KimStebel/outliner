@@ -196,8 +196,10 @@ of doing it that way is that Rauthy is not in the path of an API call: the
 backend caches the public keys and verifies signatures itself, so Rauthy being
 down does not stop a client that already holds a token.
 
-Caddy's `basic_auth` is still accepted as well. Removing it is the last step,
-once signing in has been used for long enough to trust.
+A valid bearer token is now the only way to reach the document. Caddy
+authenticates nothing, and the backend **refuses to start** without an issuer
+configured rather than serving the document unprotected — `AUTH_DISABLED=true`
+is the one way round that, which only the test harness uses.
 
 Rauthy is mounted at **`/auth` on the app's own origin**, not on a subdomain.
 All of its routes already live under `/auth`, and its issuer is always
@@ -318,6 +320,8 @@ user: <user>
 password: <password>
 ```
 
+`prod-basic-auth` is no longer used by anything; basic auth is gone.
+
 Two more gitignored files, both generated on the first deploy and then left
 alone: `prod-rauthy-env` holds the identity provider's secrets, and
 `prod-rauthy-user` the account's password. **Do not regenerate
@@ -374,6 +378,12 @@ being refused and resolved in the server's favour.
 `npm run smoke` answers one question: _did the deployment land?_ The right
 build, a valid certificate, the headers, auth enforced on the API and absent
 on the site, the service worker, offline. Behaviour is not its job.
+
+It signs in for real now, because a token is the only way to read the
+document — so every deploy also proves the login flow works against the live
+site, which nothing automated did before. It needs `prod-rauthy-user` for
+that, and stays read-only: the app is intercepted so it cannot load, since
+loading it would start sync, and sync writes.
 
 **It writes nothing, and proves it.** Writes are blocked at the network layer,
 and the stored document's ETag is compared before and after. This matters

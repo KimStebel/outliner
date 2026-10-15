@@ -32,21 +32,9 @@ echo "==> Building the site"
 echo "==> Generating Rauthy bootstrap data"
 ./rauthy/make-bootstrap-local.sh
 
-echo "==> Writing auth.caddy"
-# The same shape production gets, so the Caddyfile's `import` is exercised
-# here too. Hashed with the image that will verify it.
-PW=$BASIC_PASSWORD
-export PW
-BASIC_HASH=$(docker run --rm -e PW caddy:2-alpine \
-	sh -c 'caddy hash-password --plaintext "$PW"')
-unset PW
-printf '%s %s\n' "$BASIC_USER" "$BASIC_HASH" >auth.caddy
-
 echo "==> Starting"
 docker compose -f "$COMPOSE" up -d --build
 
-# Not /api/health: that sits behind Caddy's basic auth like the rest of the
-# API, so an unauthenticated probe of it would always fail.
 ready() {
 	curl -fsS -o /dev/null "$ORIGIN/" 2>/dev/null &&
 		curl -fsS -o /dev/null "$ORIGIN/auth/v1/health" 2>/dev/null
@@ -89,7 +77,6 @@ The stack is up at $ORIGIN
   admin UI      $ORIGIN/auth/v1/admin
                 $ADMIN_EMAIL / $ADMIN_PASSWORD
   app user      $USER_EMAIL / $USER_PASSWORD
-  basic auth    $BASIC_USER / $BASIC_PASSWORD   (still accepted, for now)
 
   node scripts/verify-oidc.mjs      the token shape, against this stack
   node scripts/verify-stack.mjs     the auth rules through Caddy

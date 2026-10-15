@@ -1,10 +1,12 @@
 /**
  * The HTTP side of sync.
  *
- * A bearer token is attached when there is one. There may not be: while auth
- * is moving off the reverse proxy, a request with no token can still be
- * accepted by it, so having no session is not an error here — the `401` that
- * comes back if it is not accepted is what asks the user to sign in.
+ * A bearer token is attached when there is one. When there is not, the request
+ * still goes out without one rather than being refused here: the server is the
+ * one that decides, and a backend running with authentication switched off —
+ * which is how it runs in local development with no provider — accepts it.
+ * Against the real deployment that costs one 401 before the user is asked to
+ * sign in.
  *
  * `401` stays its own result rather than a failure, because the fix is for the
  * user to act, not for us to retry.

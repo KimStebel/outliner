@@ -31,7 +31,6 @@ services:
       SITE_ADDRESS: ':8080'
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./auth.caddy:/etc/caddy/auth.caddy:ro
       # The built site, as rsynced to ./site in production.
       - ../dist:/srv:ro
       - caddy-data-local:/data
@@ -44,9 +43,9 @@ services:
     build: ../backend
     container_name: outliner-backend-local
     restart: unless-stopped
-    # Deliberately no `ports:`, as in production. Reaching it directly would
-    # skip both Caddy's basic auth and nothing else — the bearer check below
-    # happens in the service — but the point is to test the real path.
+    # Deliberately no `ports:`, as in production. The bearer check happens in
+    # the service, so reaching it directly would gain nothing, but the point
+    # is to exercise the real path.
     volumes:
       # A named volume rather than a bind mount: the service runs as uid
       # 10001, and a host directory would need chowning to match.

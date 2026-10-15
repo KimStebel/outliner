@@ -4,16 +4,14 @@
 //! than any scheme for uploading part of it, so this service does exactly one
 //! thing: hold the latest copy and hand it back.
 //!
-//! Authentication is in the middle of moving. Caddy sits in front and enforces
-//! HTTP basic auth, and this process is not published outside the compose
-//! network — keep it that way, since exposing the port would expose the
-//! document. On top of that, a request carrying a bearer token has it checked
-//! here, against the identity provider's published keys (see `auth`).
+//! Reaching the document needs a valid bearer token, checked here against the
+//! identity provider's published keys (see `auth`). That is now the only way
+//! in: the proxy in front no longer authenticates anything, so this service
+//! cannot be run without an issuer configured.
 //!
-//! So during the transition: a bearer token must be valid, and a request
-//! without one is trusted to have been authenticated by the proxy. Once every
-//! client sends a token, the second half of that goes away along with basic
-//! auth.
+//! It is still not published outside the compose network, and should stay that
+//! way — but that is defence in depth rather than the thing keeping the
+//! document private.
 //!
 //! The one guard that matters is conditional writes. A client that has been
 //! offline holds a whole stale document, and uploading it would not merge
@@ -78,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
 
     let auth = auth::Auth::from_env().map_err(|error| -> Box<dyn std::error::Error> {
-        // A typo here would otherwise mean tokens are silently never checked.
+        // Refusing to start beats starting without authentication.
         format!("auth is misconfigured: {error}").into()
     })?;
     match &auth {
@@ -86,7 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log(&format!("validating bearer tokens: {}", auth.describe()));
             auth.prefetch().await;
         }
-        None => log("AUTH_ISSUER is unset, so bearer tokens are not accepted"),
+        None => log("AUTH_DISABLED is set: anyone who can reach this can read \
+                     and write the document"),
     }
 
     fs::create_dir_all(&dir)?;
@@ -151,12 +150,7 @@ fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Let the request through if whoever sent it has been authenticated.
-///
-/// Two ways in while auth is being moved. A bearer token is checked here and
-/// must be valid. A request without one is let through because the proxy in
-/// front enforces basic auth and this service is not reachable any other way —
-/// that half disappears with basic auth itself.
+/// Let the request through only with a token that verifies.
 async fn authenticate(
     State(state): State<Arc<AppState>>,
     request: Request,
@@ -167,24 +161,23 @@ async fn authenticate(
         .map(str::trim)
         .filter(|token| !token.is_empty());
 
-    match (&state.auth, bearer) {
-        (Some(auth), Some(token)) => match auth.verify(token).await {
-            Ok(_) => next.run(request).await,
-            Err(denied) => {
-                // Worth a line: a client that cannot authenticate looks
-                // identical to one that is not syncing.
-                log(&format!("refused a request: {denied}"));
-                unauthorized()
-            }
-        },
-        (Some(_), None) => next.run(request).await,
-        // Refused rather than ignored: accepting it would mean trusting a
-        // token nothing had checked.
-        (None, Some(_)) => {
-            log("refused a request: a bearer token arrived but AUTH_ISSUER is unset");
+    let Some(auth) = &state.auth else {
+        // AUTH_DISABLED, which only the test harness sets.
+        return next.run(request).await;
+    };
+
+    let Some(token) = bearer else {
+        return unauthorized();
+    };
+
+    match auth.verify(token).await {
+        Ok(_) => next.run(request).await,
+        Err(denied) => {
+            // Worth a line: a client that cannot authenticate looks identical
+            // to one that is simply not syncing.
+            log(&format!("refused a request: {denied}"));
             unauthorized()
         }
-        (None, None) => next.run(request).await,
     }
 }
 
@@ -446,6 +439,9 @@ mod tests {
         _dir: tempfile::TempDir,
     }
 
+    /// A service with authentication switched off, as `AUTH_DISABLED` does.
+    /// Most tests here are about storage rather than auth, and this keeps them
+    /// from having to mint a token apiece.
     fn harness() -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
         let state = Arc::new(AppState {
@@ -526,10 +522,23 @@ mod tests {
         builder.body(axum::body::Body::empty()).expect("request")
     }
 
+    /// A write carrying a token, which is the only kind that gets anywhere now.
+    fn authorised_put(body: &str) -> Request<axum::body::Body> {
+        Request::builder()
+            .method("PUT")
+            .uri("/api/doc")
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", auth::tests::token()),
+            )
+            .body(axum::body::Body::from(body.to_owned()))
+            .expect("request")
+    }
+
     #[tokio::test]
     async fn a_valid_bearer_token_reaches_the_document() {
         let h = guarded_harness();
-        send(&h, put_request(r#"{"a":1}"#, None)).await;
+        send(&h, authorised_put(r#"{"a":1}"#)).await;
 
         let bearer = format!("Bearer {}", auth::tests::token());
         let response = send(&h, get_with_auth(Some(&bearer))).await;
@@ -540,7 +549,7 @@ mod tests {
     #[tokio::test]
     async fn a_bad_bearer_token_gets_401_and_not_the_document() {
         let h = guarded_harness();
-        send(&h, put_request(r#"{"secret":1}"#, None)).await;
+        send(&h, authorised_put(r#"{"secret":1}"#)).await;
 
         let response = send(&h, get_with_auth(Some("Bearer not.a.token"))).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -565,40 +574,46 @@ mod tests {
 
         assert_eq!(send(&h, request).await.status(), StatusCode::UNAUTHORIZED);
         // And nothing was stored.
+        let bearer = format!("Bearer {}", auth::tests::token());
         assert_eq!(
-            send(&h, get_request(None)).await.status(),
+            send(&h, get_with_auth(Some(&bearer))).await.status(),
             StatusCode::NOT_FOUND
         );
     }
 
     #[tokio::test]
-    async fn a_request_with_no_token_is_still_let_through() {
-        // The transition: the proxy in front enforces basic auth, and this
-        // service is not reachable any other way. Removing this is the last
-        // step of the move, not an oversight.
+    async fn a_request_with_no_token_is_refused() {
+        // Nothing in front authenticates any more, so this is the whole guard.
         let h = guarded_harness();
-        send(&h, put_request(r#"{"a":1}"#, None)).await;
-        assert_eq!(send(&h, get_with_auth(None)).await.status(), StatusCode::OK);
+        let response = send(&h, get_with_auth(None)).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .is_some_and(|value| value.to_str().unwrap_or_default().contains("Bearer")));
     }
 
     #[tokio::test]
-    async fn basic_credentials_are_left_to_the_proxy() {
+    async fn basic_credentials_are_no_longer_accepted() {
         let h = guarded_harness();
-        send(&h, put_request(r#"{"a":1}"#, None)).await;
         let response = send(&h, get_with_auth(Some("Basic a2ltOnNlY3JldA=="))).await;
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn a_bearer_token_is_refused_when_nothing_can_check_it() {
-        // AUTH_ISSUER unset. Accepting the token would mean trusting one that
-        // nothing had verified, so it is refused rather than ignored.
-        let h = harness();
-        send(&h, put_request(r#"{"a":1}"#, None)).await;
+    async fn an_unauthenticated_write_stores_nothing() {
+        let h = guarded_harness();
+        let request = Request::builder()
+            .method("PUT")
+            .uri("/api/doc")
+            .body(axum::body::Body::from(r#"{"theirs":1}"#))
+            .expect("request");
+        assert_eq!(send(&h, request).await.status(), StatusCode::UNAUTHORIZED);
+
         let bearer = format!("Bearer {}", auth::tests::token());
         assert_eq!(
             send(&h, get_with_auth(Some(&bearer))).await.status(),
-            StatusCode::UNAUTHORIZED
+            StatusCode::NOT_FOUND
         );
     }
 
