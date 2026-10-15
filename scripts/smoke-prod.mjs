@@ -129,6 +129,62 @@ check('a wrong password is refused', (await wrong.get(API)).status() === 401)
 await wrong.dispose()
 check('the static site needs no auth', root.status() === 200)
 
+const badBearer = await anonymous.get(API, {
+  headers: { Authorization: 'Bearer not.a.real.token' },
+})
+check('a bearer token that does not verify is refused', badBearer.status() === 401)
+// The distinction matters: had Caddy demanded basic auth of a bearer request,
+// this would carry its challenge instead and the backend would never see a
+// token at all — which is to say nobody could ever sign in.
+check(
+  'by the backend rather than by Caddy, so bearer tokens get through',
+  /bearer/i.test(badBearer.headers()['www-authenticate'] ?? ''),
+  badBearer.headers()['www-authenticate'] ?? '(absent)',
+)
+
+console.log('\nthe identity provider')
+const providerHealth = await anonymous.get(`${BASE}/auth/v1/health`)
+check(
+  'answers on this origin, under /auth',
+  providerHealth.status() === 200,
+  String(providerHealth.status()),
+)
+const discovery = await anonymous.get(
+  `${BASE}/auth/v1/.well-known/openid-configuration`,
+)
+check('publishes a discovery document', discovery.status() === 200)
+
+// The one value that has to agree between two services. A mismatch refuses
+// every token and shows up nowhere until a client tries to sync.
+const expectedIssuer = (readFileSync('deploy/docker-compose.yml', 'utf8').match(
+  /AUTH_ISSUER:\s*(\S+)/,
+) ?? [])[1]
+const advertisedIssuer = discovery.ok()
+  ? ((await discovery.json()).issuer ?? null)
+  : null
+check(
+  'advertises the issuer the backend was configured with',
+  advertisedIssuer === expectedIssuer,
+  `provider says ${advertisedIssuer}, backend expects ${expectedIssuer}`,
+)
+
+const jwks = await anonymous.get(`${BASE}/auth/v1/oidc/certs`)
+const keys = jwks.ok() ? ((await jwks.json()).keys ?? []) : []
+check(
+  'publishes an Ed25519 signing key for the backend to verify against',
+  keys.some((key) => key.crv === 'Ed25519'),
+  keys.map((key) => key.alg).join(',') || '(none)',
+)
+
+// Ours must not reach the provider's pages. `form-action 'none'` applied to a
+// login page is the kind of breakage that only surfaces when someone tries to
+// use it.
+check(
+  "does not get the app's content-security policy stapled on",
+  !/form-action 'none'/.test(discovery.headers()['content-security-policy'] ?? ''),
+  discovery.headers()['content-security-policy'] ?? '(absent)',
+)
+
 console.log('\nthe API answers')
 const before = await api.get(API)
 check(
