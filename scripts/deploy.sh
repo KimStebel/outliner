@@ -23,7 +23,13 @@ ENV_FILE=prod-env
 # generated below if absent, then left alone.
 RAUTHY_ENV=prod-rauthy-env
 RAUTHY_USER=prod-rauthy-user
-for required in "$ENV_FILE"; do
+# Cloudflare R2, for backups. Written by hand, holding:
+#   accountId: <id>
+#   key: <access key id>
+#   secret: <secret access key>
+R2_FILE=prod-cloudflare-r2
+R2_BUCKET=outliner-backups
+for required in "$ENV_FILE" "$R2_FILE"; do
   if [[ ! -f $required ]]; then
     echo "Missing $required." >&2
     exit 1
@@ -113,12 +119,31 @@ fi
 cp "$RAUTHY_ENV" deploy/rauthy.env
 chmod 600 deploy/rauthy.env
 
+# The R2 credentials, in the shape Rauthy wants them. backup-doc.sh sources
+# this same file, so there is one copy of the credentials on the server rather
+# than one per consumer.
+r2_field() { sed -n "s/^$1:[[:space:]]*//p" "$R2_FILE" | head -1; }
+(
+  umask 077
+  cat >deploy/r2.env <<R2EOF
+HQL_S3_URL=https://$(r2_field accountId).r2.cloudflarestorage.com
+HQL_S3_BUCKET=$R2_BUCKET
+HQL_S3_REGION=auto
+HQL_S3_PATH_STYLE=true
+HQL_S3_KEY=$(r2_field key)
+HQL_S3_SECRET=$(r2_field secret)
+R2EOF
+)
+
 # -- validate the provider's configuration before shipping it ----------------
 
 # Rauthy validates its own config and panics on anything it does not like.
 # Doing that here rather than discovering it from a container log on the
 # server: two deploys were spent learning that ENC_KEYS has to be real base64
 # and that rp_origin needs an explicit port, both of which this catches.
+#
+# It also reaches R2 to test the connection, so bad backup credentials fail
+# here rather than at half past two in the morning.
 #
 # Run through compose so it uses exactly the production environment, rather
 # than a second copy of it that could drift.
@@ -191,6 +216,12 @@ sshpass -e rsync -az \
 sshpass -e rsync -az --chmod=F600 \
   -e "ssh ${SSH_OPTS[*]}" \
   deploy/rauthy.env "$USER@$HOST:$REMOTE_DIR/rauthy.env"
+sshpass -e rsync -az --chmod=F600 \
+  -e "ssh ${SSH_OPTS[*]}" \
+  deploy/r2.env "$USER@$HOST:$REMOTE_DIR/r2.env"
+sshpass -e rsync -az --chmod=F700 \
+  -e "ssh ${SSH_OPTS[*]}" \
+  deploy/backup-doc.sh "$USER@$HOST:$REMOTE_DIR/backup-doc.sh"
 sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" "mkdir -p $REMOTE_DIR/rauthy"
 sshpass -e rsync -az \
   -e "ssh ${SSH_OPTS[*]}" \
@@ -220,6 +251,19 @@ sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
 # The Caddyfile is a bind mount, so changing it does not change the container
 # and `up -d` leaves it running with the old config. Without this, a config
 # change silently does not take effect.
+# -- the backup timer --------------------------------------------------------
+
+# A systemd timer rather than cron, for `Persistent=true`: a run missed while
+# the machine was off is caught up on the next boot instead of being skipped.
+echo "==> Installing the backup timer"
+sshpass -e rsync -az \
+  -e "ssh ${SSH_OPTS[*]}" \
+  deploy/outliner-backup.service deploy/outliner-backup.timer \
+  "$USER@$HOST:/etc/systemd/system/"
+sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
+  "systemctl daemon-reload && systemctl enable --now outliner-backup.timer && \
+   systemctl list-timers outliner-backup.timer --no-pager | sed -n 2p"
+
 echo "==> Reloading Caddy config"
 sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
   "cd $REMOTE_DIR && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>&1 | tail -1 && docker compose ps"

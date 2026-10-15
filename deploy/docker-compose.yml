@@ -99,6 +99,12 @@ services:
       # /auth instead. Rauthy's own documentation recommends this for exactly
       # this arrangement.
       COOKIE_MODE: secure
+      # Its own daily backup, pushed to R2. A real SQLite snapshot rather than
+      # a copy of a live file, encrypted with ENC_KEYS, and integrity-checked
+      # on restore — which is why this is left to Rauthy rather than being
+      # bundled into backup-doc.sh.
+      HQL_BACKUP_CRON: '0 30 2 * * * *'
+      HQL_BACKUP_KEEP_FOR: 10d
       RP_ID: outliner.stebel.kim
       # The port is not optional. Rauthy splits this on the last colon and
       # parses what follows as a port number, so without one it reads
@@ -111,6 +117,9 @@ services:
     # database unreadable. Not committed.
     env_file:
       - ./rauthy.env
+      # The R2 credentials, as HQL_S3_*. Shared with backup-doc.sh, which
+      # sources the same file, so the credentials live in one place.
+      - ./r2.env
 
 volumes:
   caddy-data:

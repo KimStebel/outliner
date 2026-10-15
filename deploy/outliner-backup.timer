@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily document backup to Cloudflare R2
+
+[Timer]
+# After Rauthy's own backup at 02:30, so a day's objects land together.
+OnCalendar=*-*-* 03:15:00
+# Run on the next boot if the machine was off at 03:15, rather than skipping
+# the day silently.
+Persistent=true
+# Avoids every timer on the box firing on the same second.
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

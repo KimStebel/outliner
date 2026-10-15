@@ -19,7 +19,8 @@
     "auth": "./deploy/rauthy/rauthy-local.sh",
     "stack": "./deploy/stack-local.sh",
     "verify:oidc": "node scripts/verify-oidc.mjs",
-    "verify:stack": "node scripts/verify-stack.mjs"
+    "verify:stack": "node scripts/verify-stack.mjs",
+    "backups": "node scripts/backups.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

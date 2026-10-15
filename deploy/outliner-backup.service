@@ -1,0 +1,16 @@
+[Unit]
+Description=Back up the outliner document to Cloudflare R2
+# Nothing to wait for beyond the network; the document is read off disk and
+# does not need the backend to be up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/outliner/backup-doc.sh
+# The credentials file is 0600 and root-owned, and the document is written by
+# uid 10001 but world-readable.
+User=root
+# Failures land in the journal: `journalctl -u outliner-backup`.
+StandardOutput=journal
+StandardError=journal

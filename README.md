@@ -358,6 +358,89 @@ also discards the signing keys, so every issued token stops verifying.
 The `rauthy-data` volume is the one worth backing up: it holds the account and
 the signing keys.
 
+## Backups
+
+Daily, to Cloudflare R2 (`outliner-backups`), keeping ten.
+
+```sh
+npm run backups   # what is in the bucket, and is the newest one any good
+```
+
+### Keep the secrets somewhere else
+
+`prod-rauthy-env`, `prod-rauthy-user` and `prod-env` exist **only on the
+developer's machine**, and `prod-rauthy-env` holds `ENC_KEYS` — which is what
+Rauthy's database _and its backups_ are encrypted with. Without that file the
+backups are a bucket of ciphertext.
+
+They belong in a password manager, and deliberately **not** in the backup
+bucket: putting the key next to the ciphertext defeats the point of Rauthy
+encrypting it. As it stands, losing the laptop costs more than losing the
+server.
+
+### Two mechanisms, because one already existed
+
+**Rauthy backs up its own database** at 02:30 (`HQL_BACKUP_CRON`), straight to
+R2, keeping ten days (`HQL_BACKUP_KEEP_FOR`). Those are real SQLite snapshots
+rather than copies of a live file — which can be torn — encrypted, and
+integrity-checked on restore. Better than anything written here, so it is left
+to do it. It also keeps three days locally on the server, which is a free
+second line of defence.
+
+**`deploy/backup-doc.sh` handles the document**, which nothing else covers. It
+runs at 03:15 from `outliner-backup.timer`, as `doc/YYYY-MM-DD.json.gz`.
+
+Nothing was installed for either: `curl` on the server signs its own S3
+requests with `--aws-sigv4`, and `python3` only picks keys out of a listing.
+`deploy.sh` writes `r2.env`, which Rauthy reads as an `env_file` and the script
+sources, so the credentials live in one place.
+
+The document needs no snapshotting — the backend writes it atomically, so the
+file on disk is always a complete version. A corrupt or unparseable document
+**fails** the backup rather than being uploaded, so ten days of good history
+cannot be overwritten by wreckage.
+
+Sharing one bucket is safe: Hiqlite lists the whole bucket when it prunes, but
+only deletes keys matching its own `backup_node_<id>_<ts>.sqlite` pattern, so
+`doc/` is left alone.
+
+### Retention is by count, not by age
+
+Ten _objects_, not "anything older than ten days". With a daily run they are
+the same, but they fail differently: if the timer stops, age-based expiry
+eventually leaves nothing, while keeping the newest ten leaves those ten until
+someone notices. Rauthy only offers age-based, so its own backups do expire.
+
+### Restoring
+
+Written down, deliberately never run against production.
+
+**The document.** Download the object, gunzip it, write it to
+`/home/outliner/data/doc.json`, `chown 10001:10001`, restart the backend.
+
+But first: **a restore propagates to every device.** They poll with their
+stored ETag, see a different one, and adopt the server's copy — server-wins is
+the design. So restoring a ten-day-old document overwrites newer local copies
+everywhere. The displaced version does land in `outliner:replaced-backup` in
+localStorage, which is the escape hatch.
+
+So the first question in a real restore is always _does some device still have
+the good version?_ If so, sync from that device instead.
+
+**Rauthy.** Stop the stack, set `HQL_BACKUP_RESTORE=s3:<object>`, start it,
+then remove the variable and restart. Needs the same `ENC_KEYS`.
+
+### What this does not tell you
+
+**If the timer stops, nothing says so.** `npm run backups` reports the age of
+the newest backup, but only when someone runs it. Keeping the newest ten at
+least means a stall does not eat the existing backups.
+
+Rauthy's backups also cannot be verified without restoring them — they are
+encrypted blobs, so `npm run backups` only confirms they exist, are a
+plausible size, and are recent. The account is recreatable from
+`prod-rauthy-user`, so that is a gap rather than a covered case.
+
 ## Testing
 
 Three layers, each against something it owns:
