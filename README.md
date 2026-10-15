@@ -190,11 +190,14 @@ whatever it had. Open the device holding the authoritative list first.
 
 ## Auth
 
-Being replaced: the API is behind Caddy's `basic_auth` today, and is moving to
-[Rauthy](https://github.com/sebadob/rauthy) — an OIDC provider — with the
-backend validating JWTs against its JWKS. The point of doing it that way is
-that Rauthy is then not in the path of an API call: the backend caches the
-public keys and verifies signatures itself.
+[Rauthy](https://github.com/sebadob/rauthy) — an OIDC provider — runs
+alongside the app, and the backend validates JWTs against its JWKS. The point
+of doing it that way is that Rauthy is not in the path of an API call: the
+backend caches the public keys and verifies signatures itself, so Rauthy being
+down does not stop a client that already holds a token.
+
+Caddy's `basic_auth` is still accepted as well. Removing it is the last step,
+once signing in has been used for long enough to trust.
 
 Rauthy is mounted at **`/auth` on the app's own origin**, not on a subdomain.
 All of its routes already live under `/auth`, and its issuer is always
@@ -314,6 +317,42 @@ ip: <address>
 user: <user>
 password: <password>
 ```
+
+Two more gitignored files, both generated on the first deploy and then left
+alone: `prod-rauthy-env` holds the identity provider's secrets, and
+`prod-rauthy-user` the account's password. **Do not regenerate
+`prod-rauthy-env`** — the provider's database is encrypted with `ENC_KEYS`, so
+a new key makes the account and the signing keys unreadable.
+
+### Rauthy's configuration has sharp edges
+
+Three of these cost a deploy each before `npm run deploy` learned to validate
+the provider's configuration locally first — it now runs `validate-config`
+through the production compose file before uploading anything, which catches
+the first two.
+
+- **`ENC_KEYS` must be real base64 of exactly 32 bytes.** The first attempt
+  generated it by stripping `/`, `+` and `=` out of a base64 string, which
+  does not leave a shorter base64 string — it leaves something that does not
+  decode. Rauthy refuses to start with `Invalid ENC_KEYS`.
+- **`rp_origin` needs an explicit port.** Rauthy splits it on the last colon
+  and parses the remainder as a port, so `https://outliner.stebel.kim` is read
+  as having the port `//outliner.stebel.kim`. It wants
+  `https://outliner.stebel.kim:443`.
+- **Bootstrap files must be readable by uid 10001**, which is what Rauthy runs
+  as. rsync's `--chmod=F600` left them owned by the deploying user, and Rauthy
+  says _nothing at all_ when it cannot read them: the database initialised
+  cleanly, with no client and no user, and every login 404'd. The deployment
+  check now asks whether the client is registered, because that failure is
+  otherwise completely silent.
+
+Bootstrap data is applied once, with a plain `INSERT` against an empty
+database. Changing a client or the user afterwards means the admin UI at
+`/auth/v1/admin`, or removing the `rauthy-data` volume to start over — which
+also discards the signing keys, so every issued token stops verifying.
+
+The `rauthy-data` volume is the one worth backing up: it holds the account and
+the signing keys.
 
 ## Testing
 

@@ -51,6 +51,30 @@ SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 # passed this way.
 rand() { head -c "$1" /dev/urandom | base64 -w0 | tr -d '/+=' | head -c "$2"; }
 
+# The encryption key is different: it has to be real base64 of exactly 32
+# bytes, so it cannot be squeezed through `rand` — stripping characters out of
+# a base64 string does not leave a shorter base64 string, it leaves something
+# that does not decode, which is how the first attempt at this produced a key
+# Rauthy rejected outright with "Invalid ENC_KEYS".
+#
+# Generated until it happens to contain no `/` or `+`: the key is written as
+# `id/key`, so a `/` inside it would make the separator ambiguous. Takes a
+# handful of tries.
+enc_key() {
+  local key
+  while :; do
+    key=$(head -c 32 /dev/urandom | base64 -w0)
+    if [[ $key != */* && $key != *+* ]]; then
+      # Cheap proof it is what it claims to be, rather than finding out from a
+      # panic in a container log.
+      if [[ $(printf '%s' "$key" | base64 -d 2>/dev/null | wc -c) -eq 32 ]]; then
+        printf '%s' "$key"
+        return
+      fi
+    fi
+  done
+}
+
 if [[ ! -f $RAUTHY_ENV ]]; then
   echo "==> Generating $RAUTHY_ENV (first run; keep this file)"
   umask 077
@@ -60,7 +84,7 @@ if [[ ! -f $RAUTHY_ENV ]]; then
 #
 # Do not regenerate these: the database is encrypted with ENC_KEYS, and a new
 # key makes the existing account and signing keys unreadable.
-ENC_KEYS=$key_id/$(rand 48 43)=
+ENC_KEYS=$key_id/$(enc_key)
 ENC_KEY_ACTIVE=$key_id
 HQL_SECRET_RAFT=$(rand 48 32)
 HQL_SECRET_API=$(rand 48 32)
@@ -79,6 +103,25 @@ if grep -q '[$]' "$RAUTHY_ENV"; then
   echo "$RAUTHY_ENV contains a dollar sign, which compose would mangle." >&2
   exit 1
 fi
+
+# Placed where the compose file expects it, so the same file works on both
+# sides and the configuration below can be validated against it locally.
+cp "$RAUTHY_ENV" deploy/rauthy.env
+chmod 600 deploy/rauthy.env
+
+# -- validate the provider's configuration before shipping it ----------------
+
+# Rauthy validates its own config and panics on anything it does not like.
+# Doing that here rather than discovering it from a container log on the
+# server: two deploys were spent learning that ENC_KEYS has to be real base64
+# and that rp_origin needs an explicit port, both of which this catches.
+#
+# Run through compose so it uses exactly the production environment, rather
+# than a second copy of it that could drift.
+echo "==> Validating the provider's configuration"
+docker compose -f deploy/docker-compose.yml run --rm --no-deps \
+  --entrypoint /app/rauthy \
+  rauthy validate-config --path /app/config.toml
 
 echo "==> Building"
 npm run build
@@ -143,7 +186,7 @@ sshpass -e rsync -az \
   deploy/Caddyfile deploy/docker-compose.yml "$USER@$HOST:$REMOTE_DIR/"
 sshpass -e rsync -az --chmod=F600 \
   -e "ssh ${SSH_OPTS[*]}" \
-  "$RAUTHY_ENV" "$USER@$HOST:$REMOTE_DIR/rauthy.env"
+  deploy/rauthy.env "$USER@$HOST:$REMOTE_DIR/rauthy.env"
 sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" "mkdir -p $REMOTE_DIR/rauthy"
 sshpass -e rsync -az \
   -e "ssh ${SSH_OPTS[*]}" \
@@ -151,6 +194,12 @@ sshpass -e rsync -az \
 sshpass -e rsync -az --delete --chmod=F600 \
   -e "ssh ${SSH_OPTS[*]}" \
   "$BOOTSTRAP_DIR/" "$USER@$HOST:$REMOTE_DIR/rauthy/bootstrap/"
+# Readable by the process that has to read it. Rauthy runs as 10001 and will
+# not read a file it has no access to — and says nothing when it cannot, so
+# the clients and the user were silently never created the first time this ran.
+# Kept at 0600 rather than widened: the file holds a password hash.
+sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
+  "chown -R 10001:10001 $REMOTE_DIR/rauthy/bootstrap"
 sshpass -e rsync -az --delete \
   --exclude target \
   -e "ssh ${SSH_OPTS[*]}" \

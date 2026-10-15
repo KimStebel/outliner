@@ -176,6 +176,29 @@ check(
   keys.map((key) => key.alg).join(',') || '(none)',
 )
 
+// Bootstrap data is applied once, on an empty database, and Rauthy says
+// nothing at all if it cannot read the files — which is how the first deploy
+// came up with no client registered and a login page that 404s. An authorize
+// request is the cheapest way to ask whether it exists, and is read-only.
+const authorize = await anonymous.get(
+  `${BASE}/auth/v1/oidc/authorize?` +
+    new URLSearchParams({
+      client_id: 'outliner',
+      redirect_uri: `${BASE}/`,
+      response_type: 'code',
+      scope: 'openid email',
+      state: 'deployment-check',
+      // Any well-formed challenge; nothing is redeemed here.
+      code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+      code_challenge_method: 'S256',
+    }),
+)
+check(
+  "has the app's client registered, so signing in is possible",
+  authorize.status() === 200,
+  `${authorize.status()} (404 means bootstrap did not apply)`,
+)
+
 // Ours must not reach the provider's pages. `form-action 'none'` applied to a
 // login page is the kind of breakage that only surfaces when someone tries to
 // use it.

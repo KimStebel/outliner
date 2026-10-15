@@ -13,6 +13,11 @@
 # headers, the service worker, compression and ETags. For editing the app
 # itself, the Vite dev server with ./rauthy/rauthy-local.sh is a faster loop.
 
+# Named explicitly so this project is separate from the production compose
+# file next to it, which would otherwise share a name derived from the
+# directory.
+name: outliner-local
+
 services:
   caddy:
     image: caddy:2-alpine

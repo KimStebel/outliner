@@ -39,3 +39,4 @@ deploy/auth.caddy
 prod-rauthy-env
 prod-rauthy-user
 deploy/rauthy/bootstrap-prod/
+deploy/rauthy.env
