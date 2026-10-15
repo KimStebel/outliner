@@ -60,7 +60,7 @@ for required in "$ENV_FILE" "$R2_FILE"; do
 done
 
 if [[ $FIRST_RUN == false ]]; then
-  for required in "$RAUTHY_ENV" "$RAUTHY_USER"; do
+  for required in "$RAUTHY_ENV"; do
     if [[ ! -f $required ]]; then
       cat >&2 <<MISSING
 Missing $required.
@@ -145,7 +145,7 @@ BOOTSTRAP_ADMIN_PASSWORD_PLAIN=$(rand 32 24)
 ENVEOF
 fi
 
-if [[ ! -f $RAUTHY_USER ]]; then
+if [[ $FIRST_RUN == true && ! -f $RAUTHY_USER ]]; then
   echo "==> Generating $RAUTHY_USER (keep this file; put it in your password manager)"
   umask 077
   printf 'kim.stebel@gmail.com:%s\n' "$(rand 32 24)" >"$RAUTHY_USER"
@@ -208,30 +208,38 @@ sshpass -e rsync -az --delete \
 
 # -- the provider's bootstrap data -------------------------------------------
 
-# Staged locally so the committed client definition and the generated user end
-# up in one directory, which is then the only thing rsynced.
-#
-# The password is hashed here, with the parameters Rauthy uses, so only the
-# hash reaches the server — as with the basic-auth credentials. Rauthy's own
-# `hash-password` wants a terminal, which a script has not got.
+# Staged locally so the client definition is the only thing rsynced, rather
+# than the whole of deploy/rauthy.
 echo "==> Staging Rauthy bootstrap data"
 BOOTSTRAP_DIR=deploy/rauthy/bootstrap-prod
 rm -rf "$BOOTSTRAP_DIR"
 mkdir -p "$BOOTSTRAP_DIR"
 cp deploy/rauthy/bootstrap/clients.json "$BOOTSTRAP_DIR/"
 
-USER_EMAIL=$(cut -d: -f1 "$RAUTHY_USER")
-USER_PW=$(cut -d: -f2- "$RAUTHY_USER")
-export USER_PW
-USER_HASH=$(docker run --rm -e USER_PW alpine:3 sh -c '
-  apk add -q argon2 >/dev/null 2>&1
-  salt=$(head -c 16 /dev/urandom | base64 | tr -d "=+/" | head -c 16)
-  printf "%s" "$USER_PW" | argon2 "$salt" -id -t 3 -m 15 -p 2 -e')
-unset USER_PW
+# Accounts are not the deploy's business. A routine deploy ships no user at
+# all, so it cannot create, replace or disturb one — Rauthy holds them, and
+# they are managed in its admin UI at /auth/v1/admin.
+#
+# On a first run there is no database and no admin UI to reach yet, so the one
+# account is seeded here. Its id is pinned, and has to match AUTH_SUBJECTS in
+# the compose file: that is what the backend authorises against. A subject id
+# is not a secret.
+#
+# The password is hashed here, with the parameters Rauthy uses, so only the
+# hash reaches the server — as was done for the basic-auth credentials.
+# Rauthy's own `hash-password` wants a terminal, which a script has not got.
+if [[ $FIRST_RUN == true ]]; then
+  echo "    including the initial user (first run)"
+  USER_EMAIL=$(cut -d: -f1 "$RAUTHY_USER")
+  USER_PW=$(cut -d: -f2- "$RAUTHY_USER")
+  export USER_PW
+  USER_HASH=$(docker run --rm -e USER_PW alpine:3 sh -c '
+    apk add -q argon2 >/dev/null 2>&1
+    salt=$(head -c 16 /dev/urandom | base64 | tr -d "=+/" | head -c 16)
+    printf "%s" "$USER_PW" | argon2 "$salt" -id -t 3 -m 15 -p 2 -e')
+  unset USER_PW
 
-# The subject is pinned, and must match AUTH_SUBJECTS in the compose file:
-# that is what the backend authorises against. A subject id is not a secret.
-python3 - "$BOOTSTRAP_DIR" "$USER_EMAIL" "$USER_HASH" <<'PY'
+  python3 - "$BOOTSTRAP_DIR" "$USER_EMAIL" "$USER_HASH" <<'PY'
 import json, sys
 directory, email, password_hash = sys.argv[1:4]
 json.dump(
@@ -250,6 +258,7 @@ json.dump(
     indent=2,
 )
 PY
+fi
 
 echo "==> Uploading Caddy config and backend source"
 sshpass -e rsync -az \
@@ -311,4 +320,4 @@ sshpass -e ssh "${SSH_OPTS[@]}" "$USER@$HOST" \
   "cd $REMOTE_DIR && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>&1 | tail -1 && docker compose ps"
 
 echo "==> Done. https://outliner.stebel.kim"
-echo "    Sign in as $USER_EMAIL; its password is in $RAUTHY_USER."
+echo "    Sign in with the account in $RAUTHY_USER."
