@@ -554,6 +554,15 @@ because ops mutate records in place, Svelte's deep proxy invalidates only the
 fields actually touched. Typing changes `item.text`, which no layout code reads,
 so a keystroke does not recompute the row list.
 
+### The header
+
+Undo, redo and fold-all sit on the header because they are used constantly.
+Everything rarer goes behind the `...` menu (`src/lib/Menu.svelte`), which
+takes its entries as data rather than markup — adding one is a line in the
+array in `App.svelte`, and the fiddly parts stay in the component: closing on
+an outside tap, Escape returning focus to the trigger, and arrow keys between
+items.
+
 ### The UI layer
 
 | File                 | Role                                                  |

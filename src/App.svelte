@@ -6,6 +6,7 @@
   import { welcomeDoc } from './lib/welcome'
   import { randomId } from './lib/id'
   import ImportDialog from './lib/ImportDialog.svelte'
+  import Menu from './lib/Menu.svelte'
   import Breadcrumb from './lib/Breadcrumb.svelte'
   import type { ItemId } from './lib/model'
   import SyncIndicator from './lib/SyncIndicator.svelte'
@@ -59,6 +60,15 @@
   }
 
   let importing = $state(false)
+
+  /**
+   * The overflow menu's contents: things reached rarely enough not to earn a
+   * permanent button. Undo, redo and fold-all stay outside it because they are
+   * used constantly.
+   */
+  const menuItems = $derived([
+    { label: 'Import…', onselect: () => (importing = true) },
+  ])
 
   /**
    * The item the outline is rooted at, or null for the whole document.
@@ -263,13 +273,13 @@
         </svg>
       {/if}
     </button>
-    <button onclick={() => (importing = true)}>Import</button>
     <button onclick={() => (store.undo(), handleChange())} disabled={!canUndo}>
       Undo
     </button>
     <button onclick={() => (store.redo(), handleChange())} disabled={!canRedo}>
       Redo
     </button>
+    <Menu items={menuItems} />
   </div>
 </header>
 

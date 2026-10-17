@@ -52,6 +52,12 @@ async function outlineOf(page) {
   )
 }
 
+/** Import and anything else rare now lives behind the header's ... menu. */
+async function openImport(page) {
+  await page.locator('header [aria-haspopup="menu"]').click()
+  await page.locator('[role=menuitem]', { hasText: 'Import' }).click()
+}
+
 async function focusedRowText(page) {
   return page.evaluate(() => document.activeElement?.textContent ?? null)
 }
@@ -1063,10 +1069,59 @@ check(
   ).every((href) => href === null || !href.startsWith('javascript:')),
 )
 
+console.log('\nthe overflow menu')
+const trigger = page.locator('header [aria-haspopup="menu"]')
+check(
+  'it is closed to begin with',
+  (await page.locator('[role=menu]').count()) === 0,
+)
+check(
+  'and says so',
+  (await trigger.getAttribute('aria-expanded')) === 'false',
+  String(await trigger.getAttribute('aria-expanded')),
+)
+
+await trigger.click()
+check('it opens', await page.locator('[role=menu]').isVisible())
+equal(
+  'holding what is used rarely',
+  await page.locator('[role=menuitem]').allTextContents(),
+  ['Import…'],
+)
+// Undo and redo are used constantly, so they stay on the header itself.
+check(
+  'while undo and redo stay on the header',
+  (await page.locator('header button', { hasText: 'Undo' }).count()) === 1,
+)
+
+await page.keyboard.press('Escape')
+check('Escape closes it', (await page.locator('[role=menu]').count()) === 0)
+check(
+  'and hands focus back to the trigger',
+  await trigger.evaluate((el) => el === document.activeElement),
+)
+
+await trigger.click()
+// Tapping the outline must put the menu away rather than leaving it floating
+// over the document.
+await page.locator('.row').first().click()
+await page.waitForTimeout(100)
+check(
+  'tapping outside closes it',
+  (await page.locator('[role=menu]').count()) === 0,
+)
+
+await trigger.click()
+await trigger.click()
+check(
+  'and the trigger itself toggles it shut',
+  (await page.locator('[role=menu]').count()) === 0,
+)
+
 console.log('\nmarkdown import')
 await resetDocument(page)
 const beforeImport = (await outlineOf(page)).length
-await page.locator('header button', { hasText: 'Import' }).click()
+await openImport(page)
 check('the dialog opens', await page.locator('dialog').isVisible())
 check(
   'the import button is inert with nothing to import',
@@ -1105,14 +1160,14 @@ check(
 )
 
 console.log('\ncancelling an import changes nothing')
-await page.locator('header button', { hasText: 'Import' }).click()
+await openImport(page)
 await page.locator('dialog textarea').fill('- nope')
 await page.locator('dialog .ghost').click()
 await page.waitForTimeout(100)
 check('the document is untouched', (await outlineOf(page)).length === beforeImport)
 
 console.log('\nan imported link is clickable')
-await page.locator('header button', { hasText: 'Import' }).click()
+await openImport(page)
 await page.locator('dialog textarea').fill('- docs https://imported.test/page')
 await page.locator('dialog .primary').click()
 await page.waitForTimeout(200)
