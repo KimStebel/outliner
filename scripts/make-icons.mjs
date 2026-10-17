@@ -11,7 +11,9 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
 
-const ACCENT = '#4f46e5'
+// The mark's own colour, deliberately not the UI accent: the icon is red and
+// the interface is blue. White glyphs sit on it at about 5:1.
+const LOGO = '#d32f2f'
 const OUT = new URL('../public/', import.meta.url)
 
 /**
@@ -46,7 +48,7 @@ function markup({ inset, rounded }) {
 
   const radius = rounded ? size * 0.22 : 0
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">
-  <rect width="${size}" height="${size}" rx="${radius}" fill="${ACCENT}" />
+  <rect width="${size}" height="${size}" rx="${radius}" fill="${LOGO}" />
   ${rows}
 </svg>`
 }
