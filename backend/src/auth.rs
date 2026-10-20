@@ -499,7 +499,10 @@ pub(crate) mod tests {
                 claims(),
             ))
             .await;
-        assert_eq!(result, Err(Denied::UnsupportedAlgorithm("HS256".to_string())));
+        assert_eq!(
+            result,
+            Err(Denied::UnsupportedAlgorithm("HS256".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -553,7 +556,11 @@ pub(crate) mod tests {
             let result = auth()
                 .verify(&sign(header(), claims_with("sub", serde_json::json!(sub))))
                 .await;
-            assert_eq!(result, Err(Denied::UnusableSubject(sub.to_string())), "{sub:?}");
+            assert_eq!(
+                result,
+                Err(Denied::UnusableSubject(sub.to_string())),
+                "{sub:?}"
+            );
         }
     }
 
@@ -563,7 +570,10 @@ pub(crate) mod tests {
     async fn an_expired_token_is_refused() {
         let now = unix_now();
         let result = auth()
-            .verify(&sign(header(), claims_with("exp", serde_json::json!(now - 3600))))
+            .verify(&sign(
+                header(),
+                claims_with("exp", serde_json::json!(now - 3600)),
+            ))
             .await;
         assert_eq!(result, Err(Denied::Expired));
     }
@@ -572,7 +582,10 @@ pub(crate) mod tests {
     async fn a_token_from_the_future_is_refused() {
         let now = unix_now();
         let result = auth()
-            .verify(&sign(header(), claims_with("nbf", serde_json::json!(now + 3600))))
+            .verify(&sign(
+                header(),
+                claims_with("nbf", serde_json::json!(now + 3600)),
+            ))
             .await;
         assert_eq!(result, Err(Denied::NotYetValid));
     }
@@ -582,11 +595,17 @@ pub(crate) mod tests {
         let now = unix_now();
         // Both inside the 60s leeway.
         assert!(auth()
-            .verify(&sign(header(), claims_with("exp", serde_json::json!(now - 30))))
+            .verify(&sign(
+                header(),
+                claims_with("exp", serde_json::json!(now - 30))
+            ))
             .await
             .is_ok());
         assert!(auth()
-            .verify(&sign(header(), claims_with("nbf", serde_json::json!(now + 30))))
+            .verify(&sign(
+                header(),
+                claims_with("nbf", serde_json::json!(now + 30))
+            ))
             .await
             .is_ok());
     }
@@ -601,7 +620,9 @@ pub(crate) mod tests {
             .await;
         assert_eq!(
             result,
-            Err(Denied::WrongIssuer("https://elsewhere/auth/v1/".to_string()))
+            Err(Denied::WrongIssuer(
+                "https://elsewhere/auth/v1/".to_string()
+            ))
         );
     }
 

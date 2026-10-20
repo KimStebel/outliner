@@ -179,9 +179,8 @@ async fn shutdown() {
     let ctrl_c = tokio::signal::ctrl_c();
     #[cfg(unix)]
     {
-        let mut term =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("install SIGTERM handler");
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler");
         tokio::select! {
             _ = ctrl_c => {}
             _ = term.recv() => {}
@@ -247,10 +246,7 @@ async fn authenticate(
 /// Deliberately says nothing about which check failed; the log does that.
 fn unauthorized() -> Response {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        header::WWW_AUTHENTICATE,
-        HeaderValue::from_static("Bearer"),
-    );
+    headers.insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
     (StatusCode::UNAUTHORIZED, headers, "unauthorized").into_response()
 }
 
@@ -290,7 +286,10 @@ async fn put_doc(
     // Not a schema check — just a refusal to persist something that is not
     // even JSON, which would otherwise be handed back to every client.
     if serde_json::from_slice::<serde_json::Value>(&body).is_err() {
-        log(&format!("refused a write of {} bytes: not JSON", body.len()));
+        log(&format!(
+            "refused a write of {} bytes: not JSON",
+            body.len()
+        ));
         return (StatusCode::BAD_REQUEST, "body is not valid JSON").into_response();
     }
 
@@ -340,8 +339,7 @@ async fn put_doc(
                 body.len(),
                 short(candidates),
             ));
-            return (StatusCode::PRECONDITION_FAILED, "no document stored yet")
-                .into_response();
+            return (StatusCode::PRECONDITION_FAILED, "no document stored yet").into_response();
         }
         // First write.
         (None, None) => {}
@@ -355,12 +353,18 @@ async fn put_doc(
         Ok(Ok(modified)) => modified,
         Ok(Err(error)) => {
             log(&format!("write failed: {error}"));
-            return (StatusCode::INTERNAL_SERVER_ERROR, "could not store document")
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not store document",
+            )
                 .into_response();
         }
         Err(error) => {
             log(&format!("write task failed: {error}"));
-            return (StatusCode::INTERNAL_SERVER_ERROR, "could not store document")
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not store document",
+            )
                 .into_response();
         }
     };
@@ -394,10 +398,7 @@ fn meta_headers(doc: &Stored) -> HeaderMap {
         HeaderValue::from_static("application/json"),
     );
     // The browser cache must never answer a sync request with a stale copy.
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store"),
-    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers
 }
 
@@ -512,7 +513,10 @@ fn load_all(dir: &Path) -> io::Result<HashMap<UserId, Stored>> {
         }
         let name = entry.file_name();
         let Some(user) = name.to_str().and_then(UserId::parse) else {
-            log(&format!("ignoring {}: not a user's directory", entry.path().display()));
+            log(&format!(
+                "ignoring {}: not a user's directory",
+                entry.path().display()
+            ));
             continue;
         };
         if let Some(stored) = load(&entry.path())? {
@@ -568,8 +572,18 @@ fn migrate_legacy(dir: &Path, owner: Option<&UserId>) -> Result<(), String> {
         File::open(&target)?.sync_all()?;
         File::open(dir)?.sync_all()
     })();
-    moved.map_err(|error| format!("could not move {} to {}: {error}", legacy.display(), target.display()))?;
-    log(&format!("moved {} into {}", legacy.display(), target.display()));
+    moved.map_err(|error| {
+        format!(
+            "could not move {} to {}: {error}",
+            legacy.display(),
+            target.display()
+        )
+    })?;
+    log(&format!(
+        "moved {} into {}",
+        legacy.display(),
+        target.display()
+    ));
     Ok(())
 }
 
@@ -595,7 +609,11 @@ mod tests {
     /// from having to mint a token apiece.
     fn harness() -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let state = Arc::new(AppState::new(dir.path().to_path_buf(), HashMap::new(), None));
+        let state = Arc::new(AppState::new(
+            dir.path().to_path_buf(),
+            HashMap::new(),
+            None,
+        ));
         Harness {
             router: router(state.clone()),
             state,
@@ -637,7 +655,12 @@ mod tests {
     }
 
     async fn body_of(response: Response) -> String {
-        let bytes = response.into_body().collect().await.expect("body").to_bytes();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
         String::from_utf8(bytes.to_vec()).expect("utf8")
     }
 
@@ -742,7 +765,11 @@ mod tests {
     async fn users_do_not_see_each_others_documents() {
         let h = guarded_harness();
         let mine = etag_of_response(
-            &send(&h, request_as(auth::tests::SUBJECT, "PUT", None, r#"{"mine":1}"#)).await,
+            &send(
+                &h,
+                request_as(auth::tests::SUBJECT, "PUT", None, r#"{"mine":1}"#),
+            )
+            .await,
         );
 
         // Neither the body nor the metadata of someone else's document.
@@ -755,9 +782,16 @@ mod tests {
         // Knowing my version does not let a stranger overwrite it, with the
         // tag itself or with a wildcard: they have no document to match.
         for if_match in [mine.as_str(), "*"] {
-            let response =
-                send(&h, request_as(STRANGER, "PUT", Some(if_match), r#"{"theirs":1}"#)).await;
-            assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED, "{if_match}");
+            let response = send(
+                &h,
+                request_as(STRANGER, "PUT", Some(if_match), r#"{"theirs":1}"#),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::PRECONDITION_FAILED,
+                "{if_match}"
+            );
         }
 
         // Their own first write lands beside mine rather than over it.
@@ -770,7 +804,8 @@ mod tests {
         let response = send(&h, request_as(STRANGER, "GET", None, "")).await;
         assert_eq!(body_of(response).await, r#"{"theirs":1}"#);
 
-        let on_disk = |subject: &str| fs::read(h.state.dir.join(subject).join(DOC_FILE)).expect("doc");
+        let on_disk =
+            |subject: &str| fs::read(h.state.dir.join(subject).join(DOC_FILE)).expect("doc");
         assert_eq!(on_disk(auth::tests::SUBJECT), br#"{"mine":1}"#);
         assert_eq!(on_disk(STRANGER), br#"{"theirs":1}"#);
     }
@@ -786,10 +821,17 @@ mod tests {
     #[tokio::test]
     async fn one_users_write_does_not_wait_on_anothers() {
         let h = guarded_harness();
-        send(&h, request_as(auth::tests::SUBJECT, "PUT", None, r#"{"mine":1}"#)).await;
+        send(
+            &h,
+            request_as(auth::tests::SUBJECT, "PUT", None, r#"{"mine":1}"#),
+        )
+        .await;
 
         // As if a write of mine were stuck on a slow disk.
-        let mine = h.state.existing(&auth::tests::user(auth::tests::SUBJECT)).expect("slot");
+        let mine = h
+            .state
+            .existing(&auth::tests::user(auth::tests::SUBJECT))
+            .expect("slot");
         let _held = mine.write().await;
 
         let theirs = send(&h, request_as(STRANGER, "PUT", None, r#"{"theirs":1}"#));
@@ -900,7 +942,10 @@ mod tests {
         found.sort();
         assert_eq!(
             found,
-            [("alice".to_string(), b"1".to_vec()), ("bob".to_string(), b"2".to_vec())]
+            [
+                ("alice".to_string(), b"1".to_vec()),
+                ("bob".to_string(), b"2".to_vec())
+            ]
         );
     }
 
@@ -922,8 +967,14 @@ mod tests {
         assert!(!dir.path().join(DOC_FILE).exists());
         assert!(!dir.path().join(BAK_FILE).exists());
         let moved = dir.path().join(owner.as_str());
-        assert_eq!(fs::read(moved.join(DOC_FILE)).expect("doc"), br#"{"old":2}"#);
-        assert_eq!(fs::read(moved.join(BAK_FILE)).expect("bak"), br#"{"old":1}"#);
+        assert_eq!(
+            fs::read(moved.join(DOC_FILE)).expect("doc"),
+            br#"{"old":2}"#
+        );
+        assert_eq!(
+            fs::read(moved.join(BAK_FILE)).expect("bak"),
+            br#"{"old":1}"#
+        );
 
         // And the owner's next sync finds it.
         let docs = load_all(dir.path()).expect("load");
@@ -947,7 +998,10 @@ mod tests {
         fs::write(theirs.join(DOC_FILE), r#"{"new":1}"#).expect("write");
 
         assert!(migrate_legacy(dir.path(), Some(&owner)).is_err());
-        assert_eq!(fs::read(theirs.join(DOC_FILE)).expect("doc"), br#"{"new":1}"#);
+        assert_eq!(
+            fs::read(theirs.join(DOC_FILE)).expect("doc"),
+            br#"{"new":1}"#
+        );
         assert!(dir.path().join(DOC_FILE).exists());
     }
 
@@ -1017,7 +1071,10 @@ mod tests {
         let response = send(&h, put_request(r#"{"a":2}"#, None)).await;
         assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
         // The stored document is untouched.
-        assert_eq!(body_of(send(&h, get_request(None)).await).await, r#"{"a":1}"#);
+        assert_eq!(
+            body_of(send(&h, get_request(None)).await).await,
+            r#"{"a":1}"#
+        );
     }
 
     #[tokio::test]
@@ -1030,7 +1087,10 @@ mod tests {
 
         let response = send(&h, put_request(r#"{"v":"stale"}"#, Some(&first))).await;
         assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
-        assert_eq!(body_of(send(&h, get_request(None)).await).await, r#"{"v":2}"#);
+        assert_eq!(
+            body_of(send(&h, get_request(None)).await).await,
+            r#"{"v":2}"#
+        );
     }
 
     #[tokio::test]
@@ -1072,7 +1132,10 @@ mod tests {
         let h = harness();
         let response = send(&h, put_request("not json at all", None)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(send(&h, get_request(None)).await.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            send(&h, get_request(None)).await.status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]

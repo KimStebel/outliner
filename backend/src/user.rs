@@ -44,13 +44,18 @@ mod tests {
     #[test]
     fn provider_ids_are_accepted() {
         for id in ["outlinerkimstebel0000001", "a", "with-dash_and_underscore"] {
-            assert_eq!(UserId::parse(id).map(|u| u.to_string()), Some(id.to_string()));
+            assert_eq!(
+                UserId::parse(id).map(|u| u.to_string()),
+                Some(id.to_string())
+            );
         }
     }
 
     #[test]
     fn anything_that_could_leave_the_directory_is_refused() {
-        for id in ["", ".", "..", "../x", "a/b", "a\\b", "/abs", "a.b", "a b", "ä", "a\0"] {
+        for id in [
+            "", ".", "..", "../x", "a/b", "a\\b", "/abs", "a.b", "a b", "ä", "a\0",
+        ] {
             assert_eq!(UserId::parse(id), None, "{id:?}");
         }
     }
