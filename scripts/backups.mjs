@@ -1,5 +1,5 @@
 /**
- * What is in the backup bucket, and is the newest document backup any good?
+ * What is in the backup bucket, and is each user's newest backup any good?
  *
  * Deliberately does not restore anything. It downloads the newest document
  * backup and inspects it instead: that answers "is the data all there?"
@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 
 const BUCKET = 'outliner-backups'
+/** Each user's backups are under `doc/<subject>/`. */
 const DOC_PREFIX = 'doc/'
 /** What Hiqlite names its own backups, at the root of the bucket. */
 const DB_PREFIX = 'backup_node_'
@@ -91,33 +92,59 @@ function describeAge(date) {
 
 // -- what is there -----------------------------------------------------------
 
-const documents = listing(DOC_PREFIX)
+const allDocuments = listing(DOC_PREFIX)
 const databases = listing(DB_PREFIX)
 
-console.log(`\nthe document, ${documents.length} backup(s)`)
-for (const object of documents) {
-  console.log(
-    `  ${object.key.padEnd(28)} ${String(object.size).padStart(7)} bytes  ${describeAge(object.modified)}`,
-  )
+// Keys directly under doc/ are from before per-user storage. Nothing prunes
+// them any more, so they stay as a last copy of the single document.
+const byUser = new Map()
+const legacy = []
+for (const object of allDocuments) {
+  const rest = object.key.slice(DOC_PREFIX.length)
+  const slash = rest.indexOf('/')
+  if (slash === -1) {
+    legacy.push(object)
+    continue
+  }
+  const user = rest.slice(0, slash)
+  if (!byUser.has(user)) byUser.set(user, [])
+  byUser.get(user).push(object)
+}
+
+function show(objects, width) {
+  for (const object of objects) {
+    console.log(
+      `  ${object.key.padEnd(width)} ${String(object.size).padStart(9)} bytes  ${describeAge(object.modified)}`,
+    )
+  }
+}
+
+for (const [user, documents] of byUser) {
+  console.log(`\n${user}'s document, ${documents.length} backup(s)`)
+  show(documents, 48)
+}
+if (legacy.length > 0) {
+  console.log(`\nfrom before per-user storage, ${legacy.length} backup(s)`)
+  show(legacy, 48)
 }
 
 console.log(`\nRauthy's database, ${databases.length} backup(s)`)
-for (const object of databases) {
-  console.log(
-    `  ${object.key.padEnd(44)} ${String(object.size).padStart(9)} bytes  ${describeAge(object.modified)}`,
+show(databases, 44)
+
+// Signed in once, as the account whose live document the backups are compared
+// against. The others can only be checked on their own terms.
+const live = await liveDocument()
+
+check('there is at least one user with backups', byUser.size > 0)
+
+for (const [user, documents] of byUser) {
+  console.log(`\n${user}: retention`)
+  check(
+    `at most ${EXPECTED} backups are kept`,
+    documents.length <= EXPECTED,
+    `found ${documents.length}`,
   )
-}
-
-console.log('\nretention')
-check(
-  `at most ${EXPECTED} document backups are kept`,
-  documents.length <= EXPECTED,
-  `found ${documents.length}`,
-)
-check('there is at least one', documents.length > 0)
-
-const newest = documents.at(-1)
-if (newest !== undefined) {
+  const newest = documents.at(-1)
   // Not an assertion about the timer being healthy — a stall is the one thing
   // this cannot tell you about, and nothing here pretends otherwise. It is
   // just the age, stated plainly.
@@ -126,13 +153,16 @@ if (newest !== undefined) {
     days(newest.modified) < 2,
     describeAge(newest.modified),
   )
+  inspect(newest, live?.user === user ? live : null)
 }
 
-// -- is the newest document backup actually usable ---------------------------
+if (live !== null && !byUser.has(live.user)) {
+  check(`the signed-in account (${live.user}) has backups`, false)
+}
 
-if (newest === undefined) {
-  console.log('\nnothing to inspect')
-} else {
+// -- is a document backup actually usable ------------------------------------
+
+function inspect(newest, live) {
   console.log(`\ninspecting ${newest.key}`)
 
   const metadata = r2(`${BUCKET}/${newest.key}`, { head: true })
@@ -148,126 +178,127 @@ if (newest === undefined) {
   } catch (error) {
     check('it gunzips', false, String(error))
   }
+  if (body === null) return
 
-  if (body !== null) {
-    // The whole point of recording the hash: this distinguishes "a file came
-    // back" from "the bytes are the ones that were backed up".
-    const actual = createHash('sha256').update(body).digest('hex')
-    check(
-      'the bytes are exactly what was uploaded',
-      actual === recordedSha,
-      `${actual.slice(0, 12)} vs ${String(recordedSha).slice(0, 12)}`,
-    )
-    check(
-      'and the recorded size agrees',
-      String(body.length) === recordedBytes,
-      `${body.length} vs ${recordedBytes}`,
-    )
+  // The whole point of recording the hash: this distinguishes "a file came
+  // back" from "the bytes are the ones that were backed up".
+  const actual = createHash('sha256').update(body).digest('hex')
+  check(
+    'the bytes are exactly what was uploaded',
+    actual === recordedSha,
+    `${actual.slice(0, 12)} vs ${String(recordedSha).slice(0, 12)}`,
+  )
+  check(
+    'and the recorded size agrees',
+    String(body.length) === recordedBytes,
+    `${body.length} vs ${recordedBytes}`,
+  )
 
-    // Structural validation, the same rules the app applies before it will
-    // adopt a document — a file that parses as JSON but is not a document
-    // would restore into an empty outline.
-    let parsed = null
-    try {
-      parsed = JSON.parse(body.toString('utf8'))
-    } catch (error) {
-      check('it parses as JSON', false, String(error))
-    }
-    if (parsed !== null) {
-      check('it parses as JSON', true)
-      check(
-        'it is a version 1 envelope',
-        parsed.version === 1,
-        String(parsed.version),
-      )
-
-      const doc = parsed.doc ?? {}
-      const items = doc.items ?? {}
-      const ids = Object.keys(items)
-      check('it names a root', typeof doc.rootId === 'string', String(doc.rootId))
-      check('the root is present', ids.includes(doc.rootId))
-      check('it holds items', ids.length > 1, `${ids.length} item(s)`)
-
-      const malformed = ids.filter((id) => {
-        const item = items[id]
-        return (
-          item?.id !== id ||
-          typeof item.text !== 'string' ||
-          !Array.isArray(item.children) ||
-          typeof item.collapsed !== 'boolean' ||
-          (item.parent !== null && typeof item.parent !== 'string')
-        )
-      })
-      check(
-        'every item is well formed',
-        malformed.length === 0,
-        malformed.join(','),
-      )
-
-      // Children and parents have to agree, or the outline would not render.
-      const broken = ids.filter((id) =>
-        items[id].children.some(
-          (child) => items[child] === undefined || items[child].parent !== id,
-        ),
-      )
-      check('parents and children agree', broken.length === 0, broken.join(','))
-
-      const orphans = ids.filter(
-        (id) =>
-          id !== doc.rootId &&
-          (items[id].parent === null ||
-            !items[items[id].parent]?.children.includes(id)),
-      )
-      check('nothing is orphaned', orphans.length === 0, orphans.join(','))
-
-      const text = ids.filter((id) => items[id].text.length > 0).length
-      console.log(
-        `  → ${ids.length} items, ${text} with text, ${body.length} bytes uncompressed`,
-      )
-
-      // Compared against what the server holds right now, which is the most
-      // direct answer to "is all the data there". A difference is not a
-      // failure — the document has probably just been edited since — so this
-      // reports rather than asserts.
-      console.log('\nagainst the live document')
-      const token = await liveToken()
-      if (token === null) {
-        console.log('  (could not sign in, so skipping the comparison)')
-      } else {
-        const live = await fetch('https://outliner.stebel.kim/api/doc', {
-          headers: { Authorization: `Bearer ${token}` },
-          cache: 'no-store',
-        })
-        const liveBody = await live.text()
-        const liveItems = Object.keys(JSON.parse(liveBody).doc?.items ?? {}).length
-        const liveSha = createHash('sha256').update(liveBody).digest('hex')
-        if (liveSha === actual) {
-          console.log('  identical to what the server holds')
-        } else {
-          console.log(
-            `  the server now has ${liveItems} items, this backup has ${ids.length}` +
-              ` (${liveItems - ids.length >= 0 ? '+' : ''}${liveItems - ids.length} since)`,
-          )
-        }
-        check(
-          'the backup is not obviously truncated',
-          ids.length >= liveItems * 0.5,
-          `${ids.length} vs ${liveItems} live`,
-        )
-      }
-    }
+  // Structural validation, the same rules the app applies before it will
+  // adopt a document — a file that parses as JSON but is not a document
+  // would restore into an empty outline.
+  let parsed = null
+  try {
+    parsed = JSON.parse(body.toString('utf8'))
+  } catch (error) {
+    check('it parses as JSON', false, String(error))
   }
+  if (parsed === null) return
+  check('it parses as JSON', true)
+  check('it is a version 1 envelope', parsed.version === 1, String(parsed.version))
+
+  const doc = parsed.doc ?? {}
+  const items = doc.items ?? {}
+  const ids = Object.keys(items)
+  check('it names a root', typeof doc.rootId === 'string', String(doc.rootId))
+  check('the root is present', ids.includes(doc.rootId))
+  check('it holds items', ids.length > 1, `${ids.length} item(s)`)
+
+  const malformed = ids.filter((id) => {
+    const item = items[id]
+    return (
+      item?.id !== id ||
+      typeof item.text !== 'string' ||
+      !Array.isArray(item.children) ||
+      typeof item.collapsed !== 'boolean' ||
+      (item.parent !== null && typeof item.parent !== 'string')
+    )
+  })
+  check('every item is well formed', malformed.length === 0, malformed.join(','))
+
+  // Children and parents have to agree, or the outline would not render.
+  const broken = ids.filter((id) =>
+    items[id].children.some(
+      (child) => items[child] === undefined || items[child].parent !== id,
+    ),
+  )
+  check('parents and children agree', broken.length === 0, broken.join(','))
+
+  const orphans = ids.filter(
+    (id) =>
+      id !== doc.rootId &&
+      (items[id].parent === null ||
+        !items[items[id].parent]?.children.includes(id)),
+  )
+  check('nothing is orphaned', orphans.length === 0, orphans.join(','))
+
+  const text = ids.filter((id) => items[id].text.length > 0).length
+  console.log(
+    `  → ${ids.length} items, ${text} with text, ${body.length} bytes uncompressed`,
+  )
+
+  // Compared against what the server holds right now, which is the most
+  // direct answer to "is all the data there". A difference is not a failure
+  // — the document has probably just been edited since — so this reports
+  // rather than asserts.
+  if (live === null) return
+  console.log('\nagainst the live document')
+  const liveItems = Object.keys(JSON.parse(live.body).doc?.items ?? {}).length
+  const liveSha = createHash('sha256').update(live.body).digest('hex')
+  if (liveSha === actual) {
+    console.log('  identical to what the server holds')
+  } else {
+    console.log(
+      `  the server now has ${liveItems} items, this backup has ${ids.length}` +
+        ` (${liveItems - ids.length >= 0 ? '+' : ''}${liveItems - ids.length} since)`,
+    )
+  }
+  check(
+    'the backup is not obviously truncated',
+    ids.length >= liveItems * 0.5,
+    `${ids.length} vs ${liveItems} live`,
+  )
+}
+
+/**
+ * The signed-in account's subject and its live document, or null when signing
+ * in fails — in which case the comparison is skipped, not failed.
+ */
+async function liveDocument() {
+  const token = await liveToken()
+  if (token === null) {
+    console.log('\n(could not sign in, so skipping the comparison with live)')
+    return null
+  }
+  // Only the subject is read, from a token just issued over TLS; nothing here
+  // relies on it being verified.
+  const user = JSON.parse(
+    Buffer.from(token.split('.')[1], 'base64url').toString('utf8'),
+  ).sub
+  const response = await fetch('https://outliner.stebel.kim/api/doc', {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  })
+  return { user, body: await response.text() }
 }
 
 /** Read-only sign-in, as the deployment check does. */
 async function liveToken() {
   try {
-    const context = await request.newContext()
     const [email, ...rest] = readFileSync('prod-rauthy-user', 'utf8')
       .trim()
       .split(':')
     const password = rest.join(':')
-    await context.dispose()
     const { chromium } = await import('playwright')
     const { createHash: hash, randomBytes } = await import('node:crypto')
     const b64 = (b) => b.toString('base64url')

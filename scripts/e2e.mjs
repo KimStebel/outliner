@@ -275,7 +275,8 @@ async function resetBackend() {
 /** What the backend currently holds, or null when it holds nothing. */
 function storedDocument() {
   try {
-    return readFileSync(join(backendDir, 'doc.json'), 'utf8')
+    // AUTH_DISABLED puts every request in the one user directory, `local`.
+    return readFileSync(join(backendDir, 'local', 'doc.json'), 'utf8')
   } catch {
     return null
   }

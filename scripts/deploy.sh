@@ -221,9 +221,9 @@ cp deploy/rauthy/bootstrap/clients.json "$BOOTSTRAP_DIR/"
 # they are managed in its admin UI at /auth/v1/admin.
 #
 # On a first run there is no database and no admin UI to reach yet, so the one
-# account is seeded here. Its id is pinned, and has to match AUTH_SUBJECTS in
-# the compose file: that is what the backend authorises against. A subject id
-# is not a secret.
+# account is seeded here. Its id is pinned, and has to match LEGACY_OWNER in
+# the compose file: that is who the document from before per-user storage
+# belongs to. A subject id is not a secret.
 #
 # The password is hashed here, with the parameters Rauthy uses, so only the
 # hash reaches the server — as was done for the basic-auth credentials.

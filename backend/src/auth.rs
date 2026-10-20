@@ -12,11 +12,10 @@
 //! against the one supported value, and anything else is refused before a key
 //! is even looked up.
 //!
-//! Verifying a signature is not the same as authorising the holder. A valid
-//! token proves the provider issued it to *somebody*; `subjects` is what says
-//! which somebody may touch the document. Without that check, enabling self
-//! sign-up on the provider would silently hand write access to anyone who
-//! registered.
+//! A valid token proves the provider issued it to *somebody*, and that
+//! somebody gets a document of their own, kept apart from everyone else's by
+//! their subject. So any account the provider holds can store a document here
+//! — which is why self sign-up stays off in Rauthy's config.
 
 use std::{
     collections::HashMap,
@@ -30,6 +29,8 @@ use http_body_util::BodyExt;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use serde::Deserialize;
 use tokio::sync::RwLock;
+
+use crate::user::UserId;
 
 /// The only algorithm accepted, and the only one Rauthy is configured to use.
 const ALGORITHM: &str = "EdDSA";
@@ -63,7 +64,7 @@ pub enum Denied {
     WrongAudience(String),
     Expired,
     NotYetValid,
-    UnknownSubject(String),
+    UnusableSubject(String),
 }
 
 impl std::fmt::Display for Denied {
@@ -78,7 +79,7 @@ impl std::fmt::Display for Denied {
             Self::WrongAudience(aud) => write!(f, "addressed to {aud}"),
             Self::Expired => write!(f, "expired"),
             Self::NotYetValid => write!(f, "not valid yet"),
-            Self::UnknownSubject(sub) => write!(f, "subject {sub} is not allowed"),
+            Self::UnusableSubject(sub) => write!(f, "subject {sub:?} cannot name a document"),
         }
     }
 }
@@ -89,8 +90,6 @@ pub struct Config {
     /// a comparison without it rejects every token.
     pub issuer: String,
     pub audience: String,
-    /// Subject identifiers allowed to reach the document.
-    pub subjects: Vec<String>,
     /// Tolerance on `exp` and `nbf`, for clocks that disagree.
     pub leeway: u64,
 }
@@ -128,18 +127,6 @@ impl Auth {
         };
         let jwks_url = env::var("AUTH_JWKS_URL")
             .map_err(|_| "AUTH_ISSUER is set but AUTH_JWKS_URL is not".to_string())?;
-        let subjects: Vec<String> = env::var("AUTH_SUBJECTS")
-            .unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .collect();
-        if subjects.is_empty() {
-            return Err("AUTH_ISSUER is set but AUTH_SUBJECTS is empty, so no \
-                        token could ever be authorised"
-                .to_string());
-        }
         let leeway = match env::var("AUTH_LEEWAY_SECS") {
             Ok(value) => value
                 .parse()
@@ -151,7 +138,6 @@ impl Auth {
             config: Config {
                 audience: env::var("AUTH_AUDIENCE").unwrap_or_else(|_| "outliner".into()),
                 issuer,
-                subjects,
                 leeway,
             },
             keys: RwLock::new(KeyCache::default()),
@@ -161,15 +147,13 @@ impl Auth {
 
     pub fn describe(&self) -> String {
         format!(
-            "issuer {}, audience {}, {} allowed subject(s)",
-            self.config.issuer,
-            self.config.audience,
-            self.config.subjects.len()
+            "issuer {}, audience {}",
+            self.config.issuer, self.config.audience
         )
     }
 
-    /// Check a token and return the subject it belongs to.
-    pub async fn verify(&self, token: &str) -> Result<String, Denied> {
+    /// Check a token and return the user it belongs to.
+    pub async fn verify(&self, token: &str) -> Result<UserId, Denied> {
         let mut parts = token.split('.');
         let (Some(header_b64), Some(claims_b64), Some(signature_b64), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
@@ -208,7 +192,7 @@ impl Auth {
     }
 
     /// The claim checks, once the signature is known to be good.
-    fn authorise(&self, claims: Claims) -> Result<String, Denied> {
+    fn authorise(&self, claims: Claims) -> Result<UserId, Denied> {
         if claims.typ != ACCESS_TOKEN_TYPE {
             return Err(Denied::NotAnAccessToken(claims.typ));
         }
@@ -233,12 +217,9 @@ impl Auth {
         }
 
         let subject = claims.sub.ok_or(Denied::Malformed("claims have no sub"))?;
-        // Authentication is not authorisation: a valid signature only says the
-        // provider issued this to someone.
-        if !self.config.subjects.contains(&subject) {
-            return Err(Denied::UnknownSubject(subject));
-        }
-        Ok(subject)
+        // The subject becomes a directory name, so it has to be one that
+        // cannot reach outside the data directory.
+        UserId::parse(&subject).ok_or(Denied::UnusableSubject(subject))
     }
 
     /// A key by id, fetching the key set if this one has not been seen.
@@ -416,6 +397,10 @@ pub(crate) mod tests {
 
     const ISSUER: &str = "https://outliner.example/auth/v1/";
     pub(crate) const SUBJECT: &str = "outlinerkimstebel0000001";
+
+    pub(crate) fn user(subject: &str) -> UserId {
+        UserId::parse(subject).expect("usable subject")
+    }
     const KID: &str = "test-key";
 
     fn signing_key() -> SigningKey {
@@ -432,7 +417,6 @@ pub(crate) mod tests {
             config: Config {
                 issuer: ISSUER.to_string(),
                 audience: "outliner".to_string(),
-                subjects: vec![SUBJECT.to_string()],
                 leeway: 60,
             },
             keys: RwLock::new(KeyCache {
@@ -484,7 +468,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_good_token_names_its_subject() {
-        assert_eq!(auth().verify(&token()).await, Ok(SUBJECT.to_string()));
+        assert_eq!(auth().verify(&token()).await, Ok(user(SUBJECT)));
     }
 
     // -- the attacks that matter ---------------------------------------------
@@ -551,19 +535,26 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_valid_token_for_someone_else_is_refused() {
-        // The check that matters the moment the provider allows sign-up:
-        // properly issued, properly signed, and still not authorised.
+    async fn a_valid_token_for_someone_else_is_their_own_user() {
         let result = auth()
             .verify(&sign(
                 header(),
                 claims_with("sub", serde_json::json!("a-stranger0000000000000x")),
             ))
             .await;
-        assert_eq!(
-            result,
-            Err(Denied::UnknownSubject("a-stranger0000000000000x".to_string()))
-        );
+        assert_eq!(result, Ok(user("a-stranger0000000000000x")));
+    }
+
+    #[tokio::test]
+    async fn a_subject_that_is_not_a_safe_directory_name_is_refused() {
+        // Properly signed, so this is about what the provider might issue, not
+        // about forgery: the subject is used as a path component.
+        for sub in ["", "..", "../elsewhere", "a/b"] {
+            let result = auth()
+                .verify(&sign(header(), claims_with("sub", serde_json::json!(sub))))
+                .await;
+            assert_eq!(result, Err(Denied::UnusableSubject(sub.to_string())), "{sub:?}");
+        }
     }
 
     // -- the ordinary checks -------------------------------------------------
@@ -649,7 +640,7 @@ pub(crate) mod tests {
                 claims_with("aud", serde_json::json!(["something-else", "outliner"])),
             ))
             .await;
-        assert_eq!(result, Ok(SUBJECT.to_string()));
+        assert_eq!(result, Ok(user(SUBJECT)));
     }
 
     #[tokio::test]

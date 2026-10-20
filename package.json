@@ -12,7 +12,7 @@
     "test:watch": "vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "e2e": "npm run build && node scripts/e2e.mjs",
+    "e2e": "cargo build --release --manifest-path backend/Cargo.toml && npm run build && node scripts/e2e.mjs",
     "icons": "node scripts/make-icons.mjs",
     "deploy": "./scripts/deploy.sh",
     "smoke": "npm run build && node scripts/smoke-prod.mjs",

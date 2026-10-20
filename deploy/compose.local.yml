@@ -61,9 +61,10 @@ services:
       # involved. This is a different address from the issuer on purpose.
       AUTH_JWKS_URL: http://rauthy:8080/auth/v1/oidc/certs
       AUTH_AUDIENCE: outliner
-      # Authentication is not authorisation: only this subject may touch the
-      # document, however valid someone else's token is.
-      AUTH_SUBJECTS: outlinerkimstebel0000001
+      # Every account gets a document of its own. This names the owner of a
+      # volume's document from before that, so the first start moves it into
+      # their directory. Harmless once it has.
+      LEGACY_OWNER: outlinerkimstebel0000001
 
   rauthy:
     image: ghcr.io/sebadob/rauthy:0.37.1

@@ -2,7 +2,9 @@
 //!
 //! The document is small enough (~100KB) that uploading all of it is cheaper
 //! than any scheme for uploading part of it, so this service does exactly one
-//! thing: hold the latest copy and hand it back.
+//! thing: hold the latest copy and hand it back. One copy per user — each
+//! signed-in subject has a document of their own, in a directory named after
+//! them, and never sees anyone else's.
 //!
 //! Reaching the document needs a valid bearer token, checked here against the
 //! identity provider's published keys (see `auth`). That is now the only way
@@ -19,18 +21,19 @@
 //! the version it is replacing, and is refused if that is no longer current.
 
 use std::{
+    collections::HashMap,
     env,
     fs::{self, File},
     io::{self, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock as SyncRwLock},
     time::SystemTime,
 };
 
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Request, State},
+    extract::{DefaultBodyLimit, Extension, Request, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -40,7 +43,14 @@ use axum::{
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
+use user::UserId;
+
 mod auth;
+mod user;
+
+/// Whose document a request reaches when `AUTH_DISABLED` is set, so the test
+/// harness exercises the same per-user layout as everything else.
+const LOCAL_USER: &str = "local";
 
 const DOC_FILE: &str = "doc.json";
 const TMP_FILE: &str = "doc.json.tmp";
@@ -60,12 +70,62 @@ struct Stored {
     modified: SystemTime,
 }
 
+/// One user's document, `None` until their first write.
+///
+/// An async lock, because a write holds it across the disk write so that two
+/// writes from the same user cannot both pass the `If-Match` check.
+type Slot = Arc<RwLock<Option<Stored>>>;
+
 struct AppState {
     dir: PathBuf,
-    doc: RwLock<Option<Stored>>,
+    /// Each user's document behind a lock of its own, so one user's write
+    /// never waits on another's. The map's lock is only ever held to find or
+    /// add a slot, never across an await, hence a plain blocking one.
+    docs: SyncRwLock<HashMap<UserId, Slot>>,
     /// `None` until an issuer is configured, which is how this ran when the
     /// proxy was the only thing authenticating.
     auth: Option<auth::Auth>,
+}
+
+impl AppState {
+    fn new(dir: PathBuf, docs: HashMap<UserId, Stored>, auth: Option<auth::Auth>) -> Self {
+        let docs = docs
+            .into_iter()
+            .map(|(user, stored)| (user, Arc::new(RwLock::new(Some(stored)))))
+            .collect();
+        Self {
+            dir,
+            docs: SyncRwLock::new(docs),
+            auth,
+        }
+    }
+
+    /// The user's slot, if they have ever stored anything. A read for someone
+    /// with no document adds nothing to the map.
+    fn existing(&self, user: &UserId) -> Option<Slot> {
+        self.docs
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(user)
+            .cloned()
+    }
+
+    /// The user's slot, created empty if this is their first write.
+    fn slot(&self, user: &UserId) -> Slot {
+        if let Some(slot) = self.existing(user) {
+            return slot;
+        }
+        self.docs
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(user.clone())
+            .or_default()
+            .clone()
+    }
+
+    fn user_dir(&self, user: &UserId) -> PathBuf {
+        self.dir.join(user.as_str())
+    }
 }
 
 #[tokio::main]
@@ -88,23 +148,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                      and write the document"),
     }
 
+    let legacy_owner = match env::var("LEGACY_OWNER") {
+        Ok(value) => Some(
+            UserId::parse(&value)
+                .ok_or_else(|| format!("LEGACY_OWNER is not a usable subject: {value:?}"))?,
+        ),
+        Err(_) => None,
+    };
+
     fs::create_dir_all(&dir)?;
-    let existing = load(&dir)?;
-    match &existing {
-        Some(doc) => log(&format!(
-            "loaded {} bytes from {}, etag {}",
-            doc.bytes.len(),
-            dir.join(DOC_FILE).display(),
-            short(&doc.etag)
-        )),
-        None => log(&format!("no document yet in {}", dir.display())),
+    migrate_legacy(&dir, legacy_owner.as_ref())?;
+    let docs = load_all(&dir)?;
+    if docs.is_empty() {
+        log(&format!("no documents yet in {}", dir.display()));
     }
 
-    let state = Arc::new(AppState {
-        dir,
-        doc: RwLock::new(existing),
-        auth,
-    });
+    let state = Arc::new(AppState::new(dir, docs, auth));
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     log(&format!("listening on {bind}"));
@@ -153,7 +212,7 @@ fn router(state: Arc<AppState>) -> Router {
 /// Let the request through only with a token that verifies.
 async fn authenticate(
     State(state): State<Arc<AppState>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let bearer = header_str(request.headers(), header::AUTHORIZATION)
@@ -161,24 +220,28 @@ async fn authenticate(
         .map(str::trim)
         .filter(|token| !token.is_empty());
 
-    let Some(auth) = &state.auth else {
+    let user = match &state.auth {
         // AUTH_DISABLED, which only the test harness sets.
-        return next.run(request).await;
-    };
-
-    let Some(token) = bearer else {
-        return unauthorized();
-    };
-
-    match auth.verify(token).await {
-        Ok(_) => next.run(request).await,
-        Err(denied) => {
-            // Worth a line: a client that cannot authenticate looks identical
-            // to one that is simply not syncing.
-            log(&format!("refused a request: {denied}"));
-            unauthorized()
+        None => UserId::parse(LOCAL_USER).expect("LOCAL_USER is usable"),
+        Some(auth) => {
+            let Some(token) = bearer else {
+                return unauthorized();
+            };
+            match auth.verify(token).await {
+                Ok(user) => user,
+                Err(denied) => {
+                    // Worth a line: a client that cannot authenticate looks
+                    // identical to one that is simply not syncing.
+                    log(&format!("refused a request: {denied}"));
+                    return unauthorized();
+                }
+            }
         }
-    }
+    };
+
+    // Which document the handlers below operate on.
+    request.extensions_mut().insert(user);
+    next.run(request).await
 }
 
 /// Deliberately says nothing about which check failed; the log does that.
@@ -191,9 +254,17 @@ fn unauthorized() -> Response {
     (StatusCode::UNAUTHORIZED, headers, "unauthorized").into_response()
 }
 
-async fn get_doc(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let guard = state.doc.read().await;
-    let Some(doc) = guard.as_ref() else {
+async fn get_doc(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<UserId>,
+    headers: HeaderMap,
+) -> Response {
+    let slot = state.existing(&user);
+    let guard = match &slot {
+        Some(slot) => Some(slot.read().await),
+        None => None,
+    };
+    let Some(doc) = guard.as_deref().and_then(Option::as_ref) else {
         return (StatusCode::NOT_FOUND, "no document stored yet").into_response();
     };
 
@@ -208,6 +279,7 @@ async fn get_doc(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Resp
 
 async fn put_doc(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<UserId>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -222,7 +294,8 @@ async fn put_doc(
         return (StatusCode::BAD_REQUEST, "body is not valid JSON").into_response();
     }
 
-    let mut guard = state.doc.write().await;
+    let slot = state.slot(&user);
+    let mut guard = slot.write().await;
     let if_match = header_str(&headers, header::IF_MATCH);
 
     match (guard.as_ref(), if_match) {
@@ -274,7 +347,7 @@ async fn put_doc(
         (None, None) => {}
     }
 
-    let dir = state.dir.clone();
+    let dir = state.user_dir(&user);
     let to_write = body.clone();
     let written = tokio::task::spawn_blocking(move || write_atomic(&dir, &to_write)).await;
 
@@ -298,7 +371,7 @@ async fn put_doc(
         modified,
     };
     log(&format!(
-        "stored {} bytes, etag {}",
+        "stored {} bytes for {user}, etag {}",
         stored.bytes.len(),
         short(&stored.etag)
     ));
@@ -384,6 +457,13 @@ fn etag_of(bytes: &[u8]) -> String {
 /// worse than none at all: the next client to sync would pull the wreckage
 /// over its good local copy.
 fn write_atomic(dir: &Path, bytes: &[u8]) -> io::Result<SystemTime> {
+    // A user's first write is also when their directory comes into being.
+    if !dir.exists() {
+        fs::create_dir_all(dir)?;
+        if let Some(parent) = dir.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+    }
     let target = dir.join(DOC_FILE);
     let tmp = dir.join(TMP_FILE);
 
@@ -422,6 +502,77 @@ fn load(dir: &Path) -> io::Result<Option<Stored>> {
     }
 }
 
+/// Every user's document, from the directories named after them.
+fn load_all(dir: &Path) -> io::Result<HashMap<UserId, Stored>> {
+    let mut docs = HashMap::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(user) = name.to_str().and_then(UserId::parse) else {
+            log(&format!("ignoring {}: not a user's directory", entry.path().display()));
+            continue;
+        };
+        if let Some(stored) = load(&entry.path())? {
+            log(&format!(
+                "loaded {} bytes for {user}, etag {}",
+                stored.bytes.len(),
+                short(&stored.etag)
+            ));
+            docs.insert(user, stored);
+        }
+    }
+    Ok(docs)
+}
+
+/// Move the document from before there were users into its owner's directory.
+///
+/// It used to live at the top of the data directory. Left there it would
+/// simply be ignored: the owner's first sync would get a 404 and start the
+/// document over, and the backups would go on copying the abandoned file. So
+/// an old document with no owner named stops the service from starting at
+/// all, rather than going missing quietly.
+fn migrate_legacy(dir: &Path, owner: Option<&UserId>) -> Result<(), String> {
+    let legacy = dir.join(DOC_FILE);
+    if !legacy.exists() {
+        return Ok(());
+    }
+    let Some(owner) = owner else {
+        return Err(format!(
+            "{} predates per-user storage; set LEGACY_OWNER to the subject it \
+             belongs to and it will be moved into that user's directory",
+            legacy.display()
+        ));
+    };
+    let target = dir.join(owner.as_str());
+    if target.join(DOC_FILE).exists() {
+        return Err(format!(
+            "both {} and {} exist; keep one by hand",
+            legacy.display(),
+            target.join(DOC_FILE).display()
+        ));
+    }
+
+    let moved = (|| -> io::Result<()> {
+        fs::create_dir_all(&target)?;
+        // The document last, so that a crash part-way leaves it where this
+        // looks for it, and the next start finishes the job.
+        for name in [BAK_FILE, DOC_FILE] {
+            let from = dir.join(name);
+            if from.exists() {
+                fs::rename(&from, target.join(name))?;
+            }
+        }
+        File::open(&target)?.sync_all()?;
+        File::open(dir)?.sync_all()
+    })();
+    moved.map_err(|error| format!("could not move {} to {}: {error}", legacy.display(), target.display()))?;
+    log(&format!("moved {} into {}", legacy.display(), target.display()));
+    Ok(())
+}
+
 fn log(message: &str) {
     println!("[{}] {message}", httpdate::fmt_http_date(SystemTime::now()));
 }
@@ -444,11 +595,7 @@ mod tests {
     /// from having to mint a token apiece.
     fn harness() -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let state = Arc::new(AppState {
-            dir: dir.path().to_path_buf(),
-            doc: RwLock::new(load(dir.path()).expect("load")),
-            auth: None,
-        });
+        let state = Arc::new(AppState::new(dir.path().to_path_buf(), HashMap::new(), None));
         Harness {
             router: router(state.clone()),
             state,
@@ -483,6 +630,12 @@ mod tests {
         builder.body(axum::body::Body::empty()).expect("request")
     }
 
+    /// Where the harness's documents land: `AUTH_DISABLED` maps every request
+    /// to the one local user.
+    fn local_dir(harness: &Harness) -> PathBuf {
+        harness.state.dir.join(LOCAL_USER)
+    }
+
     async fn body_of(response: Response) -> String {
         let bytes = response.into_body().collect().await.expect("body").to_bytes();
         String::from_utf8(bytes.to_vec()).expect("utf8")
@@ -502,11 +655,11 @@ mod tests {
     /// already loaded so nothing here touches the network.
     fn guarded_harness() -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let state = Arc::new(AppState {
-            dir: dir.path().to_path_buf(),
-            doc: RwLock::new(None),
-            auth: Some(auth::tests::auth()),
-        });
+        let state = Arc::new(AppState::new(
+            dir.path().to_path_buf(),
+            HashMap::new(),
+            Some(auth::tests::auth()),
+        ));
         Harness {
             router: router(state.clone()),
             state,
@@ -535,6 +688,35 @@ mod tests {
             .expect("request")
     }
 
+    /// A valid token for an account other than the usual test one.
+    const STRANGER: &str = "stranger00000000000000aa";
+
+    fn bearer_for(subject: &str) -> String {
+        let token = auth::tests::sign(
+            auth::tests::header(),
+            auth::tests::claims_with("sub", serde_json::json!(subject)),
+        );
+        format!("Bearer {token}")
+    }
+
+    fn request_as(
+        subject: &str,
+        method: &str,
+        if_match: Option<&str>,
+        body: &str,
+    ) -> Request<axum::body::Body> {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri("/api/doc")
+            .header(header::AUTHORIZATION, bearer_for(subject));
+        if let Some(value) = if_match {
+            builder = builder.header(header::IF_MATCH, value);
+        }
+        builder
+            .body(axum::body::Body::from(body.to_owned()))
+            .expect("request")
+    }
+
     #[tokio::test]
     async fn a_valid_bearer_token_reaches_the_document() {
         let h = guarded_harness();
@@ -557,28 +739,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_token_for_an_unlisted_subject_cannot_write() {
-        // The guard that matters once the provider allows sign-up: a real
-        // token from a real account that is simply not this one.
+    async fn users_do_not_see_each_others_documents() {
         let h = guarded_harness();
-        let stranger = auth::tests::sign(
-            auth::tests::header(),
-            auth::tests::claims_with("sub", serde_json::json!("stranger00000000000000aa")),
+        let mine = etag_of_response(
+            &send(&h, request_as(auth::tests::SUBJECT, "PUT", None, r#"{"mine":1}"#)).await,
         );
-        let request = Request::builder()
-            .method("PUT")
-            .uri("/api/doc")
-            .header(header::AUTHORIZATION, format!("Bearer {stranger}"))
-            .body(axum::body::Body::from(r#"{"theirs":1}"#))
-            .expect("request");
 
-        assert_eq!(send(&h, request).await.status(), StatusCode::UNAUTHORIZED);
-        // And nothing was stored.
-        let bearer = format!("Bearer {}", auth::tests::token());
-        assert_eq!(
-            send(&h, get_with_auth(Some(&bearer))).await.status(),
-            StatusCode::NOT_FOUND
-        );
+        // Neither the body nor the metadata of someone else's document.
+        for method in ["GET", "HEAD"] {
+            let response = send(&h, request_as(STRANGER, method, None, "")).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method}");
+            assert!(!response.headers().contains_key(header::ETAG), "{method}");
+        }
+
+        // Knowing my version does not let a stranger overwrite it, with the
+        // tag itself or with a wildcard: they have no document to match.
+        for if_match in [mine.as_str(), "*"] {
+            let response =
+                send(&h, request_as(STRANGER, "PUT", Some(if_match), r#"{"theirs":1}"#)).await;
+            assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED, "{if_match}");
+        }
+
+        // Their own first write lands beside mine rather than over it.
+        let response = send(&h, request_as(STRANGER, "PUT", None, r#"{"theirs":1}"#)).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let response = send(&h, request_as(auth::tests::SUBJECT, "GET", None, "")).await;
+        assert_eq!(etag_of_response(&response), mine);
+        assert_eq!(body_of(response).await, r#"{"mine":1}"#);
+        let response = send(&h, request_as(STRANGER, "GET", None, "")).await;
+        assert_eq!(body_of(response).await, r#"{"theirs":1}"#);
+
+        let on_disk = |subject: &str| fs::read(h.state.dir.join(subject).join(DOC_FILE)).expect("doc");
+        assert_eq!(on_disk(auth::tests::SUBJECT), br#"{"mine":1}"#);
+        assert_eq!(on_disk(STRANGER), br#"{"theirs":1}"#);
+    }
+
+    #[tokio::test]
+    async fn a_read_for_someone_with_no_document_adds_nothing() {
+        let h = guarded_harness();
+        send(&h, request_as(STRANGER, "GET", None, "")).await;
+        assert!(h.state.docs.read().unwrap().is_empty());
+        assert!(!h.state.dir.join(STRANGER).exists());
+    }
+
+    #[tokio::test]
+    async fn one_users_write_does_not_wait_on_anothers() {
+        let h = guarded_harness();
+        send(&h, request_as(auth::tests::SUBJECT, "PUT", None, r#"{"mine":1}"#)).await;
+
+        // As if a write of mine were stuck on a slow disk.
+        let mine = h.state.existing(&auth::tests::user(auth::tests::SUBJECT)).expect("slot");
+        let _held = mine.write().await;
+
+        let theirs = send(&h, request_as(STRANGER, "PUT", None, r#"{"theirs":1}"#));
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), theirs)
+            .await
+            .expect("a stranger's write is not blocked by mine");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -652,21 +870,94 @@ mod tests {
 
     #[tokio::test]
     async fn the_document_survives_a_restart() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let state = Arc::new(AppState {
-            dir: dir.path().to_path_buf(),
-            doc: RwLock::new(None),
-            auth: None,
-        });
-        let app = router(state);
-        app.clone()
-            .oneshot(put_request(r#"{"kept":true}"#, None))
-            .await
-            .expect("put");
+        let h = harness();
+        let etag = etag_of_response(&send(&h, put_request(r#"{"kept":true}"#, None)).await);
 
         // A fresh process over the same directory.
-        let reloaded = load(dir.path()).expect("load").expect("some");
-        assert_eq!(reloaded.bytes.as_ref(), br#"{"kept":true}"#);
+        let docs = load_all(&h.state.dir).expect("load");
+        let reloaded = router(Arc::new(AppState::new(h.state.dir.clone(), docs, None)));
+        let response = reloaded.oneshot(get_request(None)).await.expect("response");
+        assert_eq!(etag_of_response(&response), etag);
+        assert_eq!(body_of(response).await, r#"{"kept":true}"#);
+    }
+
+    #[test]
+    fn every_users_document_is_loaded_and_nothing_else() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for (name, body) in [("alice", "1"), ("bob", "2"), ("lost+found", "3")] {
+            fs::create_dir(dir.path().join(name)).expect("mkdir");
+            fs::write(dir.path().join(name).join(DOC_FILE), body).expect("write");
+        }
+        // A user who has a directory but never finished a first write.
+        fs::create_dir(dir.path().join("carol")).expect("mkdir");
+        fs::write(dir.path().join("stray.json"), "4").expect("write");
+
+        let docs = load_all(dir.path()).expect("load");
+        let mut found: Vec<_> = docs
+            .iter()
+            .map(|(user, stored)| (user.to_string(), stored.bytes.to_vec()))
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [("alice".to_string(), b"1".to_vec()), ("bob".to_string(), b"2".to_vec())]
+        );
+    }
+
+    // -- the move from a single document -------------------------------------
+
+    fn legacy_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::write(dir.path().join(DOC_FILE), r#"{"old":2}"#).expect("write");
+        fs::write(dir.path().join(BAK_FILE), r#"{"old":1}"#).expect("write");
+        dir
+    }
+
+    #[test]
+    fn an_old_document_moves_into_its_owners_directory() {
+        let dir = legacy_dir();
+        let owner = auth::tests::user(auth::tests::SUBJECT);
+        migrate_legacy(dir.path(), Some(&owner)).expect("migrate");
+
+        assert!(!dir.path().join(DOC_FILE).exists());
+        assert!(!dir.path().join(BAK_FILE).exists());
+        let moved = dir.path().join(owner.as_str());
+        assert_eq!(fs::read(moved.join(DOC_FILE)).expect("doc"), br#"{"old":2}"#);
+        assert_eq!(fs::read(moved.join(BAK_FILE)).expect("bak"), br#"{"old":1}"#);
+
+        // And the owner's next sync finds it.
+        let docs = load_all(dir.path()).expect("load");
+        assert_eq!(docs[&owner].bytes.as_ref(), br#"{"old":2}"#);
+    }
+
+    #[test]
+    fn an_old_document_with_no_owner_named_stops_the_start() {
+        let dir = legacy_dir();
+        let error = migrate_legacy(dir.path(), None).expect_err("refused");
+        assert!(error.contains("LEGACY_OWNER"), "{error}");
+        assert!(dir.path().join(DOC_FILE).exists());
+    }
+
+    #[test]
+    fn an_old_document_never_overwrites_a_newer_one() {
+        let dir = legacy_dir();
+        let owner = auth::tests::user(auth::tests::SUBJECT);
+        let theirs = dir.path().join(owner.as_str());
+        fs::create_dir(&theirs).expect("mkdir");
+        fs::write(theirs.join(DOC_FILE), r#"{"new":1}"#).expect("write");
+
+        assert!(migrate_legacy(dir.path(), Some(&owner)).is_err());
+        assert_eq!(fs::read(theirs.join(DOC_FILE)).expect("doc"), br#"{"new":1}"#);
+        assert!(dir.path().join(DOC_FILE).exists());
+    }
+
+    #[test]
+    fn with_nothing_to_move_the_owner_is_not_needed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        migrate_legacy(dir.path(), None).expect("nothing to do");
+        let owner = auth::tests::user(auth::tests::SUBJECT);
+        migrate_legacy(dir.path(), Some(&owner)).expect("nothing to do");
+        assert!(!dir.path().join(owner.as_str()).exists());
     }
 
     #[tokio::test]
@@ -807,7 +1098,7 @@ mod tests {
         let first = etag_of_response(&send(&h, put_request(r#"{"v":1}"#, None)).await);
         send(&h, put_request(r#"{"v":2}"#, Some(&first))).await;
 
-        let backup = fs::read(h.state.dir.join(BAK_FILE)).expect("backup");
+        let backup = fs::read(local_dir(&h).join(BAK_FILE)).expect("backup");
         assert_eq!(backup, br#"{"v":1}"#);
     }
 
@@ -815,7 +1106,8 @@ mod tests {
     async fn no_temporary_file_is_left_behind() {
         let h = harness();
         send(&h, put_request(r#"{"v":1}"#, None)).await;
-        assert!(!h.state.dir.join(TMP_FILE).exists());
+        assert!(local_dir(&h).join(DOC_FILE).exists());
+        assert!(!local_dir(&h).join(TMP_FILE).exists());
     }
 
     #[test]
